@@ -103,6 +103,7 @@
   let lastSubmittedTranscript = '';
   let lastSubmittedTurnId = null;
   let lastSubmittedTime = 0;
+  let hasStartedInitialSession = false;
 
   const LANGUAGE_CONFIGS = {
     en: {
@@ -363,6 +364,11 @@
     if (!message || !message.text) return;
     const lang = currentLanguage || 'en';
 
+    // Cancel any active browser speech synthesis
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+
     // 1. First attempt: Stream crystal-clear MP3 audio via /api/tts endpoint
     try {
       const ttsUrl = `/api/tts?lang=${encodeURIComponent(lang)}&text=${encodeURIComponent(message.text)}`;
@@ -377,14 +383,15 @@
             binary += String.fromCharCode(bytes[i]);
           }
           const base64Audio = btoa(binary);
+          const uniqueSegId = message.segmentId || ('seg_fb_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6));
           await audioPlayer.enqueue(base64Audio, {
             text: message.text,
             format: 'mp3',
             generationId: message.generationId,
             responseId: message.responseId,
-            segmentId: message.segmentId || 'seg_fb_tts',
+            segmentId: uniqueSegId,
             chunkIndex: 1,
-            isFirst: true,
+            isFirst: false,
             isLast: true,
           });
           return;
@@ -396,6 +403,10 @@
 
     // 2. Second attempt: Local browser SpeechSynthesis with dedicated Tamil/Hindi voice
     if (typeof window !== 'undefined' && window.speechSynthesis) {
+      // Ensure Web Audio player is halted so browser speech synthesis never speaks simultaneously
+      if (audioPlayer && audioPlayer.isPlaying) {
+        audioPlayer.stop();
+      }
       window.speechSynthesis.cancel();
       const bestVoice = getBestVoiceForLanguage(lang);
       let spokenText = message.text;
@@ -1064,6 +1075,12 @@
         activeSpeechTurnController.reset();
       }
 
+      // Immediately halt any previous assistant speech before starting new consultation turn
+      if (audioPlayer) audioPlayer.stop();
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+
       console.log('[App] Submitting typed text consultation:', text);
       let normalized = {
         rawTranscript: text,
@@ -1230,6 +1247,8 @@
    * Start a session via HTTP/SSE (used when WebSocket is unavailable)
    */
   async function startSessionHTTP() {
+    if (hasStartedInitialSession) return;
+    hasStartedInitialSession = true;
     try {
       if (activeSSEAbortController) activeSSEAbortController.abort();
       activeSSEAbortController = new AbortController();
@@ -1597,8 +1616,9 @@
         if (message.language && message.language !== currentLanguage) {
           setAppLanguage(message.language, false);
         }
-        // In WebSocket mode, send start_session; in HTTP mode, session is already started
-        if (!useHttpTransport) {
+        // In WebSocket mode, send start_session exactly once; in HTTP mode, session is already started
+        if (!useHttpTransport && !hasStartedInitialSession) {
+          hasStartedInitialSession = true;
           sendMessage({ type: 'start_session' });
         }
         if (!isMicMuted) {
@@ -1966,6 +1986,12 @@
         lastSubmittedTurnId = turnId;
         lastSubmittedTime = Date.now();
         lastUserTurnEndWallTime = performance.now();
+
+        // Immediately halt any previous assistant speech before starting new consultation turn
+        if (audioPlayer) audioPlayer.stop();
+        if (typeof window !== 'undefined' && window.speechSynthesis) {
+          window.speechSynthesis.cancel();
+        }
 
         console.log('[App] Submitting complete user speech (turnId: ' + turnId + '):', finalTextToSubmit);
 

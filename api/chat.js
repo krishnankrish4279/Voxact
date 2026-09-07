@@ -103,8 +103,11 @@ module.exports = async function handler(req, res) {
 
     // ─── Helper: Synthesize a sentence and stream audio ────────────
     let segmentCounter = 0;
+    let isFirstSentenceOfTurn = true;
     async function synthesizeAndSend(sentence, segId) {
       if (!sentence || !sentence.trim()) return;
+      const isFirst = isFirstSentenceOfTurn;
+      isFirstSentenceOfTurn = false;
       try {
         const result = await rime.synthesizeHTTP(sentence, (audioData, meta) => {
           send({
@@ -115,7 +118,7 @@ module.exports = async function handler(req, res) {
             generationId: genId,
             segmentId: segId || `seg_${++segmentCounter}`,
             chunkIndex: 1,
-            isFirst: meta?.isFirst ?? true,
+            isFirst: isFirst,
             isLast: meta?.isLast ?? true,
           });
         }, null);

@@ -21,6 +21,9 @@ class AudioPlayer {
     // HTML5 Audio fallback
     this.currentHtml5Audio = null;
 
+    // Decode serialization queue to prevent concurrent overlapping playback
+    this._decodeQueue = Promise.resolve();
+
     // Playback state & generation fencing
     this.isPlaying = false;
     this.playbackId = 0;
@@ -174,54 +177,62 @@ class AudioPlayer {
         this.scheduledSegments.add(segmentKey);
       }
 
-      this.telemetry.audio_decode_started++;
-      const decodeStart = performance.now();
+      this._decodeQueue = (this._decodeQueue || Promise.resolve()).then(async () => {
+        if (this.playbackId !== activePlaybackId) return;
 
-      try {
-        if (!this.audioContext) throw new Error('Web Audio Context not initialized');
+        this.telemetry.audio_decode_started++;
+        const decodeStart = performance.now();
 
-        // Robust cross-browser decodeAudioData supporting Promise and callback formats
-        const audioBuffer = await new Promise((resolve, reject) => {
-          let resolved = false;
-          try {
-            const res = this.audioContext.decodeAudioData(
-              completeSentenceBytes.buffer.slice(0),
-              (buf) => {
-                if (!resolved) { resolved = true; resolve(buf); }
-              },
-              (err) => {
-                if (!resolved) { resolved = true; reject(err || new Error('decodeAudioData failed')); }
+        try {
+          if (!this.audioContext) throw new Error('Web Audio Context not initialized');
+
+          // Robust cross-browser decodeAudioData supporting Promise and callback formats
+          const audioBuffer = await new Promise((resolve, reject) => {
+            let resolved = false;
+            try {
+              const res = this.audioContext.decodeAudioData(
+                completeSentenceBytes.buffer.slice(0),
+                (buf) => {
+                  if (!resolved) { resolved = true; resolve(buf); }
+                },
+                (err) => {
+                  if (!resolved) { resolved = true; reject(err || new Error('decodeAudioData failed')); }
+                }
+              );
+              if (res && typeof res.then === 'function') {
+                res.then(buf => {
+                  if (!resolved) { resolved = true; resolve(buf); }
+                }).catch(err => {
+                  if (!resolved) { resolved = true; reject(err); }
+                });
               }
-            );
-            if (res && typeof res.then === 'function') {
-              res.then(buf => {
-                if (!resolved) { resolved = true; resolve(buf); }
-              }).catch(err => {
-                if (!resolved) { resolved = true; reject(err); }
-              });
+            } catch (syncErr) {
+              if (!resolved) { resolved = true; reject(syncErr); }
             }
-          } catch (syncErr) {
-            if (!resolved) { resolved = true; reject(syncErr); }
+          });
+          const decodeComplete = performance.now();
+
+          // Stale check after asynchronous decode
+          if (this.playbackId !== activePlaybackId) {
+            console.log('[AudioPlayer] Decoded audio discarded (stale playbackId after stop)');
+            return;
           }
-        });
-        const decodeComplete = performance.now();
 
-        // Stale check after asynchronous decode
-        if (this.playbackId !== activePlaybackId) {
-          console.log('[AudioPlayer] Decoded audio discarded (stale playbackId after stop)');
-          return;
+          this.telemetry.audio_decode_success++;
+          this._scheduleAudioBuffer(audioBuffer, metadata, { decodeStart, decodeComplete });
+        } catch (decodeErr) {
+          this.telemetry.audio_decode_failed++;
+          console.warn('[AudioPlayer] decodeAudioData failed, falling back to HTML5 Audio:', decodeErr.message);
+          if (this.playbackId === activePlaybackId) {
+            this._playHtml5AudioBytes(completeSentenceBytes, metadata);
+          }
         }
+        this._emitTelemetry();
+      }).catch((queueErr) => {
+        console.error('[AudioPlayer] Decode queue error:', queueErr);
+      });
 
-        this.telemetry.audio_decode_success++;
-        this._scheduleAudioBuffer(audioBuffer, metadata, { decodeStart, decodeComplete });
-      } catch (decodeErr) {
-        this.telemetry.audio_decode_failed++;
-        console.warn('[AudioPlayer] decodeAudioData failed, falling back to HTML5 Audio:', decodeErr.message);
-        if (this.playbackId === activePlaybackId) {
-          this._playHtml5AudioBytes(completeSentenceBytes, metadata);
-        }
-      }
-      this._emitTelemetry();
+      await this._decodeQueue;
     }
   }
 
@@ -241,9 +252,10 @@ class AudioPlayer {
 
     const currentTime = this.audioContext.currentTime;
     // Sample-accurate gapless timeline scheduling:
-    // If player is idle or nextStartTime drifted behind/too far ahead (>8s), start immediately at currentTime
+    // If nextStartTime is in the future, schedule seamlessly at nextStartTime.
+    // Never start at currentTime if audio is already queued on the timeline, preventing overlapping double voices!
     let startTime = currentTime;
-    if (this.isPlaying && this.nextStartTime > currentTime && (this.nextStartTime - currentTime) < 8) {
+    if (this.isPlaying && this.nextStartTime > currentTime) {
       startTime = this.nextStartTime;
     } else {
       startTime = currentTime;
@@ -323,10 +335,12 @@ class AudioPlayer {
       this.telemetry.audio_queue_depth = this.queue.length;
 
       if (this.activeSources.length === 0 && this.pendingChunkBytes.length === 0) {
-        this.isPlaying = false;
-        this.nextStartTime = 0;
-        this.currentlyPlayingText = '';
-        if (this.onPlaybackEnd) this.onPlaybackEnd();
+        if (!this.audioContext || this.nextStartTime <= this.audioContext.currentTime + 0.05) {
+          this.isPlaying = false;
+          this.nextStartTime = 0;
+          this.currentlyPlayingText = '';
+          if (this.onPlaybackEnd) this.onPlaybackEnd();
+        }
       }
       this._emitTelemetry();
     };
@@ -395,6 +409,7 @@ class AudioPlayer {
     this.scheduledSegments.clear();
     this.segmentChunkBuffers.clear();
     this.queue = [];
+    this._decodeQueue = Promise.resolve();
 
     // Immediately halt all active and scheduled Web Audio buffer sources
     for (const source of this.activeSources) {
@@ -412,6 +427,11 @@ class AudioPlayer {
         this.currentHtml5Audio.currentTime = 0;
       } catch (e) {}
       this.currentHtml5Audio = null;
+    }
+
+    // Cancel any active browser speech synthesis
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      try { window.speechSynthesis.cancel(); } catch (e) {}
     }
 
     this.isPlaying = false;
