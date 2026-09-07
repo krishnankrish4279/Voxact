@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="VoxAct — Voice-Native Medical Triage Assistant. Powered by Rime TTS and Groq with Zero Dead-Air Conversation Continuity.">
+  <title>VoxAct — Voice-Native Medical Triage · Rime Hackathon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+</head>
+<body>
+  <!-- Medical Disclaimer Banner -->
+  <div class="disclaimer-banner" id="disclaimerBanner">
+    <div class="disclaimer-content">
+      <span class="disclaimer-tag">DEMO</span>
+      <span class="disclaimer-text">Synthetic triage demonstration for the Rime Hackathon. Not medical advice. For emergencies, call 911.</span>
+      <button class="disclaimer-close" id="disclaimerClose" aria-label="Close disclaimer">✕</button>
+    </div>
+  </div>
+
+  <!-- Main Application -->
+  <div class="app-wrapper">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="logo-icon">
+          <svg viewBox="0 0 40 40" fill="none">
+            <circle cx="20" cy="20" r="18" stroke="url(#logoGrad)" stroke-width="2.5"/>
+            <path d="M20 10 L20 30 M14 16 L20 10 L26 16 M14 24 L20 30 L26 24" stroke="url(#logoGrad)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            <defs>
+              <linearGradient id="logoGrad" x1="0" y1="0" x2="40" y2="40">
+                <stop offset="0%" stop-color="#00f2fe"/>
+                <stop offset="100%" stop-color="#4facfe"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <div>
+          <div class="logo-title-row">
+            <h1 class="logo-text">VoxAct</h1>
+            <span class="hackathon-badge">🏆 Rime Hackathon</span>
+          </div>
+          <span class="logo-subtitle">Voice-Native Medical Triage · Zero Dead-Air Architecture</span>
+        </div>
+      </div>
+
+      <div class="header-badges">
+        <!-- Multilingual Language Selector -->
+        <div class="lang-selector-container">
+          <label for="languageSelect" class="lang-selector-label" title="Change conversation language">🌐</label>
+          <select id="languageSelect" class="lang-selector-dropdown" aria-label="Select conversation language">
+            <option value="en" selected>English</option>
+            <option value="ta">தமிழ் (Tamil)</option>
+            <option value="hi">हिन्दी (Hindi)</option>
+          </select>
+        </div>
+
+        <div class="tech-badge">
+          <span class="pulse-dot rime-dot"></span>
+          <span id="rimeBadgeText">Rime Mist v3 (cove)</span>
+        </div>
+        <div class="tech-badge">
+          <span class="pulse-dot groq-dot"></span>
+          <span>Groq 120B LPU</span>
+        </div>
+        <div class="connection-status" id="connectionStatus">
+          <span class="status-dot"></span>
+          <span class="status-text" id="statusText">Connecting...</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Two-Column Jury Dashboard Grid -->
+    <main class="dashboard-grid">
+      <!-- Left Column: Voice Orb & Clinical Assessment Hub -->
+      <div class="dashboard-left">
+        <!-- Voice Orb Panel -->
+        <section class="voice-card">
+          <div class="state-pill" id="stateIndicator">
+            <span class="state-beacon"></span>
+            <span class="state-text" id="stateText">Ready to Begin</span>
+          </div>
+
+          <div class="orb-stage" id="orbContainer">
+            <div class="orb-halo" id="orbGlow"></div>
+            <div class="orb-ring ring-1"></div>
+            <div class="orb-ring ring-2"></div>
+            <div class="orb" id="voiceOrb">
+              <div class="orb-core">
+                <svg class="orb-mic-icon" id="orbMicIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="2" width="6" height="12" rx="3"/>
+                  <path d="M5 10a7 7 0 0 0 14 0"/>
+                  <line x1="12" y1="17" x2="12" y2="21"/>
+                  <line x1="8" y1="21" x2="16" y2="21"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+
+          <!-- Waveform Visualizer Dock -->
+          <div class="waveform-dock">
+            <canvas id="waveformCanvas" class="waveform-canvas"></canvas>
+          </div>
+
+          <!-- Interaction Controls (Full Mic On/Off Control) -->
+          <div class="control-row">
+            <button class="primary-voice-btn" id="startBtn">
+              <span class="btn-primary-text" id="startBtnMain">Tap to Begin Voice Triage</span>
+              <span class="btn-sub-text" id="startBtnSub">Click & speak naturally into your microphone</span>
+            </button>
+            <div class="mic-controls-row" id="activeControlsRow">
+              <button class="btn-control-toggle" id="toggleMicBtn" title="Turn microphone listening on or off">
+                <span id="toggleMicIcon">🎙️</span>
+                <span id="toggleMicText">Mute Mic</span>
+              </button>
+              <button class="btn-control-test" id="testAudioBtn" title="Test voice audio output">
+                <span id="testAudioIcon">🔊</span>
+                <span>Test Sound</span>
+              </button>
+              <button class="interrupt-test-btn" id="quickInterruptBtn" title="Test instant barge-in cut-off">
+                🛑 Say "Wait"
+              </button>
+              <button class="btn-control-end" id="endSessionBtn" title="Turn off microphone and finish consultation">
+                ⏹️ End Session
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Live Clinical Assessment Card -->
+        <section class="clinical-card">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="card-icon">🩺</span>
+              <h2>Live Clinical Assessment</h2>
+            </div>
+            <span class="urgency-pill" id="urgencyBadge">Waiting for Input</span>
+          </div>
+
+          <!-- Detected Symptoms -->
+          <div class="assessment-section">
+            <label class="section-label">Reported Symptoms</label>
+            <div class="symptom-tags" id="symptomTags">
+              <span class="symptom-tag placeholder">Speak symptoms to begin analysis...</span>
+            </div>
+          </div>
+
+          <!-- Differential Diagnosis -->
+          <div class="assessment-section">
+            <label class="section-label">Differential Conditions</label>
+            <div class="conditions-list" id="conditionsList">
+              <div class="empty-conditions">No conditions analyzed yet</div>
+            </div>
+          </div>
+
+          <!-- Recommended Care & Clinic -->
+          <div class="assessment-section" id="clinicSection">
+            <label class="section-label">Care Pathway & Nearby Facility</label>
+            <div class="clinic-box" id="clinicBox">
+              <div class="clinic-name" id="clinicName">Awaiting Care Assessment</div>
+              <div class="clinic-meta" id="clinicMeta">Nearby facility will appear when symptoms and location are assessed</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Nearby Healthcare Map & Care Navigation Card -->
+        <section class="care-navigation-card" id="careNavigationCard">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="card-icon">🗺️</span>
+              <h2>Nearby Care Navigation</h2>
+            </div>
+            <div class="location-controls">
+              <button class="btn-location" id="detectLocationBtn" type="button" title="Detect your current location">
+                <span class="loc-icon">📍</span> <span id="locStatusText">Locate Me</span>
+              </button>
+              <select class="city-select-dropdown" id="manualCitySelect" aria-label="Select City Manually">
+                <option value="auto_gps" selected>📍 Auto GPS Location</option>
+                <option value="san_francisco">San Francisco, CA</option>
+                <option value="seattle">Seattle, WA</option>
+                <option value="chennai">Chennai, TN</option>
+                <option value="delhi">Delhi, NCR</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Emergency Guidance Notice Banner (shown if emergency / critical) -->
+          <div class="emergency-guidance-banner hidden" id="emergencyGuidanceBanner">
+            <div class="emergency-icon">🚨</div>
+            <div class="emergency-content">
+              <strong>Emergency Guidance:</strong> If you are experiencing chest pain, difficulty breathing, or severe bleeding, please call emergency services immediately (<span id="emergencyNumberText">911 / 112</span>) or proceed to the nearest Emergency Department.
+            </div>
+          </div>
+
+          <!-- Interactive Leaflet Map Container -->
+          <div class="care-map-container">
+            <div id="careMap" class="care-map" role="region" aria-label="Healthcare facilities map"></div>
+            <div class="map-overlay-info" id="mapOverlayInfo">
+              <span id="mapCenterLabel">📍 Locating device...</span>
+            </div>
+          </div>
+
+          <!-- Recommended Facilities List -->
+          <div class="facilities-container">
+            <div class="facilities-header">
+              <span class="facilities-title" id="facilitiesCountLabel">Recommended Facilities (Voice Matched)</span>
+              <span class="facilities-disclaimer">Facility recommendations only · Verify availability</span>
+            </div>
+            <div class="facility-cards-list" id="facilityCardsList">
+              <div class="empty-facilities" id="emptyFacilitiesNote">
+                Describe symptoms to discover voice-matched care facilities near you.
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Right Column: Continuity Telemetry HUD & Conversation Stream -->
+      <div class="dashboard-right">
+        <!-- Zero Dead-Air Continuity Telemetry HUD -->
+        <section class="telemetry-hud">
+          <div class="hud-header">
+            <div class="hud-title">
+              <span class="hud-lightning">⚡</span>
+              <h3>Zero Dead-Air Continuity Telemetry</h3>
+            </div>
+            <span class="hud-badge">Rime Continuous Streaming</span>
+          </div>
+
+          <div class="telemetry-grid">
+            <div class="telemetry-card">
+              <span class="telemetry-metric" id="metricFiller">—</span>
+              <span class="telemetry-title">Filler Dispatch</span>
+              <span class="telemetry-target">Bridge Phrase Trigger</span>
+            </div>
+
+            <div class="telemetry-card">
+              <span class="telemetry-metric" id="metricRimeTTFB">—</span>
+              <span class="telemetry-title">Rime Response Start</span>
+              <span class="telemetry-target">Mist v3 WebSocket TTS</span>
+            </div>
+
+            <div class="telemetry-card">
+              <span class="telemetry-metric" id="metricInterrupt">—</span>
+              <span class="telemetry-title">Client Audio Halt</span>
+              <span class="telemetry-target">Speech Detect → Mute</span>
+            </div>
+
+            <div class="telemetry-card">
+              <span class="telemetry-metric" id="metricFencing">—</span>
+              <span class="telemetry-title">Stale Fence Rate</span>
+              <span class="telemetry-target">Zero Audio Leakage</span>
+            </div>
+          </div>
+
+          <!-- Active Filler Continuity Banner -->
+          <div class="filler-alert" id="fillerAlert">
+            <span class="filler-pulse"></span>
+            <span class="filler-text" id="fillerAlertText">Continuity Active: Background medical tools executing while conversation stays alive.</span>
+          </div>
+
+          <!-- Live Pipeline Diagnostics & Telemetry Panel (Non-intrusive) -->
+          <div class="pipeline-diagnostics-panel" id="pipelineDiagnostics">
+            <div class="diag-header">
+              <span class="diag-title">🩺 Voice & Location Telemetry</span>
+              <span class="diag-badge" id="voiceDiagBadge">Live Pipeline Active</span>
+            </div>
+            <div class="diag-grid">
+              <div class="diag-col">
+                <div class="diag-section-label">VOICE STREAMING</div>
+                <div class="diag-item">
+                  <span class="diag-label">Engine:</span>
+                  <span class="diag-value" id="diagVoiceEngine">Rime Mist v3 (cove / eng)</span>
+                </div>
+                <div class="diag-item">
+                  <span class="diag-label">Time to First Audio:</span>
+                  <span class="diag-value" id="diagTTFA">—</span>
+                </div>
+                <div class="diag-item">
+                  <span class="diag-label">Speaker Playback Start:</span>
+                  <span class="diag-value" id="diagPlayback">—</span>
+                </div>
+              </div>
+              <div class="diag-col">
+                <div class="diag-section-label">DEVICE LOCATION</div>
+                <div class="diag-item">
+                  <span class="diag-label">Status:</span>
+                  <span class="diag-value" id="diagLocationStatus">Acquiring GPS...</span>
+                </div>
+                <div class="diag-item">
+                  <span class="diag-label">Accuracy:</span>
+                  <span class="diag-value" id="diagLocationAccuracy">—</span>
+                </div>
+                <div class="diag-item">
+                  <span class="diag-label">Last Updated:</span>
+                  <span class="diag-value" id="diagLocationTime">—</span>
+                </div>
+              </div>
+              <div class="diag-col">
+                <div class="diag-section-label">AUDIO QUALITY</div>
+                <div class="diag-item">
+                  <span class="diag-label">Queue Depth:</span>
+                  <span class="diag-value" id="diagQueueDepth">0</span>
+                </div>
+                <div class="diag-item">
+                  <span class="diag-label">Underruns:</span>
+                  <span class="diag-value" id="diagUnderruns">0</span>
+                </div>
+                <div class="diag-item">
+                  <span class="diag-label">Decode Failures:</span>
+                  <span class="diag-value" id="diagDecodeFailures">0</span>
+                </div>
+                <div class="diag-item">
+                  <span class="diag-label">Audio Duration:</span>
+                  <span class="diag-value" id="diagAudioDuration">0.0s</span>
+                </div>
+                <div class="diag-item">
+                  <span class="diag-label">Inter-Sentence Gap:</span>
+                  <span class="diag-value" id="diagSentenceGap">—</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Conversation Stream (Spacious, No Overlap) -->
+        <section class="conversation-panel">
+          <div class="conversation-header">
+            <h3>Live Conversation Stream</h3>
+            <div class="conv-actions">
+              <button class="btn-subtle" id="clearTranscript">Clear History</button>
+            </div>
+          </div>
+
+          <div class="transcript-scroll" id="transcriptContainer">
+            <div class="transcript-empty" id="transcriptEmpty">
+              <div class="empty-icon">💬</div>
+              <p>Ready for your voice consultation.</p>
+              <span>Click "Tap to Begin" and describe your symptoms.</span>
+            </div>
+          </div>
+
+          <!-- Text Input Consultation Fallback -->
+          <form class="text-input-bar" id="textInputForm" onsubmit="return false;">
+            <input type="text" id="userTextInput" class="user-text-input" placeholder="Type symptoms here (e.g. severe headache and fever)..." autocomplete="off" />
+            <button type="submit" id="sendTextBtn" class="btn-send-text" title="Send message">Send ➔</button>
+          </form>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- Scripts -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="js/audio-player.js?v=2"></script>
+  <script src="js/voice-visualizer.js?v=2"></script>
+  <script src="js/medical-transcriber.js?v=2"></script>
+  <script src="js/app.js?v=2"></script>
+</body>
+</html>

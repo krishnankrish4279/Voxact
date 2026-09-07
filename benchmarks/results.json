@@ -1,0 +1,268 @@
+{
+  "benchmarkDate": "2026-09-06T16:01:34.220Z",
+  "trialsCount": 30,
+  "benchmarkScope": "Server-side Orchestrator invalidation and tool fencing pipeline",
+  "methodology": "Direct execution of Orchestrator._handleToolCall() with background delay, mid-flight interruption, and generation invalidation across 30 consecutive trials.",
+  "clientAudioHaltNote": "Client Web Audio halt latency is measured live in browser Web Audio context (AudioBufferSourceNode.stop()) and displayed on the UI Telemetry HUD. It is not simulated in this Node runner.",
+  "summary": {
+    "successRate": "30/30",
+    "staleFenceRate": "30/30",
+    "staleAudioLeakage": "0/30",
+    "serverInvalidationMs": {
+      "median": 0.23,
+      "p95": 0.81,
+      "min": 0.15,
+      "max": 1.08,
+      "avg": 0.29
+    },
+    "fillerDispatchMs": {
+      "median": 0.02,
+      "p95": 0.11,
+      "min": 0.01,
+      "max": 0.12,
+      "avg": 0.03
+    }
+  },
+  "trials": [
+    {
+      "run": 1,
+      "passed": true,
+      "serverInvalMs": 0.81,
+      "fillerDispatchMs": 0.11,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 2,
+      "passed": true,
+      "serverInvalMs": 0.33,
+      "fillerDispatchMs": 0.12,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 3,
+      "passed": true,
+      "serverInvalMs": 0.18,
+      "fillerDispatchMs": 0.04,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 4,
+      "passed": true,
+      "serverInvalMs": 0.22,
+      "fillerDispatchMs": 0.04,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 5,
+      "passed": true,
+      "serverInvalMs": 0.52,
+      "fillerDispatchMs": 0.04,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 6,
+      "passed": true,
+      "serverInvalMs": 0.21,
+      "fillerDispatchMs": 0.03,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 7,
+      "passed": true,
+      "serverInvalMs": 0.19,
+      "fillerDispatchMs": 0.03,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 8,
+      "passed": true,
+      "serverInvalMs": 0.28,
+      "fillerDispatchMs": 0.03,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 9,
+      "passed": true,
+      "serverInvalMs": 0.23,
+      "fillerDispatchMs": 0.04,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 10,
+      "passed": true,
+      "serverInvalMs": 0.22,
+      "fillerDispatchMs": 0.04,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 11,
+      "passed": true,
+      "serverInvalMs": 0.41,
+      "fillerDispatchMs": 0.04,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 12,
+      "passed": true,
+      "serverInvalMs": 0.26,
+      "fillerDispatchMs": 0.02,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 13,
+      "passed": true,
+      "serverInvalMs": 0.22,
+      "fillerDispatchMs": 0.02,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 14,
+      "passed": true,
+      "serverInvalMs": 0.15,
+      "fillerDispatchMs": 0.02,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 15,
+      "passed": true,
+      "serverInvalMs": 0.19,
+      "fillerDispatchMs": 0.01,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 16,
+      "passed": true,
+      "serverInvalMs": 0.16,
+      "fillerDispatchMs": 0.01,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 17,
+      "passed": true,
+      "serverInvalMs": 0.16,
+      "fillerDispatchMs": 0.06,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 18,
+      "passed": true,
+      "serverInvalMs": 0.25,
+      "fillerDispatchMs": 0.11,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 19,
+      "passed": true,
+      "serverInvalMs": 0.15,
+      "fillerDispatchMs": 0.02,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 20,
+      "passed": true,
+      "serverInvalMs": 0.25,
+      "fillerDispatchMs": 0.01,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 21,
+      "passed": true,
+      "serverInvalMs": 0.15,
+      "fillerDispatchMs": 0.01,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 22,
+      "passed": true,
+      "serverInvalMs": 0.29,
+      "fillerDispatchMs": 0.02,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 23,
+      "passed": true,
+      "serverInvalMs": 0.17,
+      "fillerDispatchMs": 0.01,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 24,
+      "passed": true,
+      "serverInvalMs": 0.18,
+      "fillerDispatchMs": 0.01,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 25,
+      "passed": true,
+      "serverInvalMs": 0.27,
+      "fillerDispatchMs": 0.01,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 26,
+      "passed": true,
+      "serverInvalMs": 0.24,
+      "fillerDispatchMs": 0.02,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 27,
+      "passed": true,
+      "serverInvalMs": 0.23,
+      "fillerDispatchMs": 0.01,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 28,
+      "passed": true,
+      "serverInvalMs": 0.32,
+      "fillerDispatchMs": 0.01,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 29,
+      "passed": true,
+      "serverInvalMs": 1.08,
+      "fillerDispatchMs": 0.02,
+      "staleFenced": true,
+      "staleSpoken": false
+    },
+    {
+      "run": 30,
+      "passed": true,
+      "serverInvalMs": 0.45,
+      "fillerDispatchMs": 0.03,
+      "staleFenced": true,
+      "staleSpoken": false
+    }
+  ]
+}
