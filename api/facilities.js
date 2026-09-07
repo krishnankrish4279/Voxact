@@ -21,6 +21,14 @@ module.exports = async function handler(req, res) {
     const careType = req.query.type || req.query.careType || null;
     const locationName = req.query.city || req.query.location || null;
     const language = req.query.lang || req.query.language || 'en';
+    const allowFallback = req.query.allowFallback === 'true';
+
+    console.log('[api/facilities] Searching facilities (live-first):', {
+      locationSource: req.query.source || 'gps',
+      urgency: urgencyLevel,
+      language,
+      allowFallback
+    });
 
     const results = await searchHealthcareFacilities({
       lat,
@@ -28,8 +36,16 @@ module.exports = async function handler(req, res) {
       urgencyLevel,
       careType,
       locationName,
-      language
+      language,
+      allowFallback
     });
+
+    console.log('[api/facilities] Facility search complete:', {
+      resultCount: results.facilities?.length || 0,
+      targetCareType: results.targetCareType,
+      isEmergency: results.isEmergency
+    });
+
     res.status(200).json(results);
   } catch (err) {
     res.status(500).json({ error: err.message });

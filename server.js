@@ -24,6 +24,10 @@ const PORT = process.env.PORT || 3000;
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
+// ─── Serverless API Endpoints (Chat & Session) ──────────────────────────────
+app.post('/api/chat', require('./api/chat'));
+app.post('/api/session', require('./api/session'));
+
 // ─── Health Check ───────────────────────────────────────────────────────────
 
 app.get('/api/health', (req, res) => {
@@ -170,8 +174,19 @@ wss.on('connection', (ws) => {
           break;
 
         case 'user_speech':
+          if (message.pendingAction !== undefined) {
+            orchestrator.pendingAction = message.pendingAction;
+            orchestrator.llm.pendingAction = message.pendingAction;
+          }
+          if (message.nearbyCareStatus !== undefined) {
+            orchestrator.nearbyCareStatus = message.nearbyCareStatus;
+            orchestrator.llm.nearbyCareStatus = message.nearbyCareStatus;
+            if (message.nearbyCareStatus === 'declined') {
+              orchestrator.llm.careDeclined = true;
+            }
+          }
           // User finished speaking (final transcription)
-          await orchestrator.handleUserSpeech(message.text);
+          await orchestrator.handleUserSpeech(message.text || message);
           break;
 
         case 'user_speech_interim':

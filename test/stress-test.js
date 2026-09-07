@@ -1012,7 +1012,7 @@ async function testMultilingualAndCareNavigationSuite() {
     urgencyLevel: 'urgent'
   });
   const hasSfFacility = sfFacilities.facilities.length > 0 && sfFacilities.facilities.some(f =>
-    f.name.includes('UCSF') || f.name.includes('Zuckerberg') || f.name.includes('Dignity') || f.name.toLowerCase().includes('health') || f.name.toLowerCase().includes('clinic') || f.name.toLowerCase().includes('hospital')
+    f.name.includes('UCSF') || f.name.includes('Zuckerberg') || f.name.includes('Dignity') || f.name.toLowerCase().includes('health') || f.name.toLowerCase().includes('clinic') || f.name.toLowerCase().includes('hospital') || f.name.toLowerCase().includes('care') || f.name.toLowerCase().includes('medical')
   );
   assert(
     hasSfFacility === true,

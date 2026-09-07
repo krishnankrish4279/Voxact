@@ -97,6 +97,12 @@
   let useHttpTransport = false;
   let httpConversationHistory = []; // Maintained client-side for stateless serverless
   let activeSSEAbortController = null; // Abort in-flight SSE requests on interruption
+  let pendingAction = null; // Tracks pending interaction state e.g. 'CHECK_NEARBY_CARE'
+  let nearbyCareStatus = 'not_requested'; // 'not_requested' | 'pending' | 'accepted' | 'declined'
+  let isSubmittingTurn = false; // Prevents duplicate concurrent turn submissions
+  let lastSubmittedTranscript = '';
+  let lastSubmittedTurnId = null;
+  let lastSubmittedTime = 0;
 
   const LANGUAGE_CONFIGS = {
     en: {
@@ -343,6 +349,59 @@
   let facilitySearchSeq = 0;
   let activeFacilitiesAbortCtrl = null;
 
+  function isClientNegative(text) {
+    if (!text) return false;
+    const lower = text.toLowerCase().trim();
+    const raw = text.trim();
+    if (/^(no|nope|nah|no thanks|not now|no need|don't check|dont check|cancel|not really|nevermind|i'm good|im good|no clinic|no hospital)\b/i.test(lower)) return true;
+    if (/\b(don't check|dont check|do not check|no thanks|not now|no need|no clinic|no hospital|vendaam|rehne do)\b/i.test(lower)) return true;
+    if (/^(illai|vendaam|illa|vendam|paravala|thevaiyillai)\b/i.test(lower)) return true;
+    if (raw.includes('இல்லை') || raw.includes('வேண்டாம்') || raw.includes('இல்ல') || raw.includes('வேணாம்') || raw.includes('பரவாயில்லை')) return true;
+    if (/^(nahi|nahin|na|rehne do|mat karo|abhi nahi|nahi chahiye)\b/i.test(lower)) return true;
+    if (raw.includes('नहीं') || raw.includes('ना') || raw.includes('नहीं चाहिए') || raw.includes('रहने दीजिए') || raw.includes('रहने दो') || raw.includes('मत')) return true;
+    return false;
+  }
+
+  function isClientAffirmative(text) {
+    if (!text) return false;
+    if (isClientNegative(text)) return false;
+    const lower = text.toLowerCase().trim();
+    const raw = text.trim();
+    if (/^(yes|yeah|yep|yup|sure|okay|ok|please do|certainly|go ahead|definitely|please check|check clinics|do that|sounds good|yes please)\b/i.test(lower)) return true;
+    if (/\b(yes|yeah|sure|okay|ok|check)\b/i.test(lower) && (raw.includes('பண்ணுங்க') || raw.includes('பாருங்க') || raw.includes('ஆமா') || raw.includes('காட்டு') || raw.includes('தேடு') || raw.includes('हाँ') || raw.includes('कहो') || raw.includes('करो') || raw.includes('दिखा'))) return true;
+    if (/^(aama|aamam|sari|paarunga|pannunga|thedu|kaatunga|check pannunga)\b/i.test(lower)) return true;
+    if (raw.includes('ஆமா') || raw.includes('ஆமாம்') || raw.includes('சரி') || raw.includes('பாருங்க') || raw.includes('பண்ணுங்க') || raw.includes('தேடுங்க') || raw.includes('காட்டுங்க') || raw.includes('செக் பண்ணு')) return true;
+    if (/^(haan|haanji|ji haan|zaroor|theek hai|sahi hai|check karo|dikhao|karo)\b/i.test(lower)) return true;
+    if (raw.includes('हाँ') || raw.includes('हां') || raw.includes('ज़रूर') || raw.includes('जरूर') || raw.includes('दिखाइए') || raw.includes('खोजिए') || raw.includes('ठीक है') || raw.includes('बताइए')) return true;
+    return false;
+  }
+
+  function clearCareFacilities(reason = 'declined') {
+    latestCareFacilities = [];
+    if (facilityCardsList) {
+      facilityCardsList.innerHTML = '';
+      const empty = document.createElement('div');
+      empty.className = 'empty-facilities';
+      empty.id = 'emptyFacilitiesNote';
+      empty.textContent = reason === 'declined'
+        ? 'Care recommendations declined.'
+        : 'Describe symptoms to discover voice-matched care facilities near you.';
+      facilityCardsList.appendChild(empty);
+    }
+    if (clinicName) clinicName.textContent = 'Awaiting Care Assessment';
+    if (clinicMeta) clinicMeta.textContent = reason === 'declined' ? 'Care recommendation declined by user' : 'Nearby facility will appear when symptoms and location are assessed';
+    if (careMapInstance && typeof L !== 'undefined') {
+      facilityMarkers.forEach(m => careMapInstance.removeLayer(m));
+      facilityMarkers = [];
+    }
+    if (facilitiesCountLabel) {
+      facilitiesCountLabel.textContent = 'Recommended Facilities (Voice Matched)';
+    }
+    if (emergencyGuidanceBanner && reason === 'declined') {
+      emergencyGuidanceBanner.classList.add('hidden');
+    }
+  }
+
   async function queryCareFacilitiesForLocation(loc, urgency = 'medium') {
     if (!loc || loc.lat === undefined || loc.lon === undefined || loc.lat === null || loc.lon === null) return;
     facilitySearchSeq++;
@@ -438,8 +497,10 @@
           type: 'set_location',
           location: currentLocation
         });
-
-        queryCareFacilitiesForLocation(currentLocation);
+        // Location acquired — do not auto-query facilities unless accepted
+        if (nearbyCareStatus === 'accepted') {
+          queryCareFacilitiesForLocation(currentLocation);
+        }
       },
       (err) => {
         if (detectLocationBtn) detectLocationBtn.disabled = false;
@@ -459,6 +520,12 @@
 
   function renderCareFacilities(facilities, urgencyLevel, userLoc = null) {
     if (!Array.isArray(facilities)) return;
+    if (nearbyCareStatus === 'declined') {
+      console.log('[App] Suppressing facility render: nearby care is declined');
+      return;
+    }
+    // NEAREST FIRST: Sort facilities strictly by distance ascending
+    facilities.sort((a, b) => (a.distanceMiles ?? 999) - (b.distanceMiles ?? 999));
     latestCareFacilities = facilities;
 
     // Update Live Clinical Assessment Card with the verified top facility (no synthetic clinic data)
@@ -496,8 +563,9 @@
     if (facilities.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'empty-facilities';
-      empty.textContent = 'No nearby verified facility found.';
+      empty.textContent = 'No nearby facilities found from the live search.';
       facilityCardsList.appendChild(empty);
+      if (clinicName) clinicName.textContent = 'Awaiting Care Assessment';
       return;
     }
 
@@ -741,7 +809,9 @@
             type: 'set_location',
             location: currentLocation
           });
-          queryCareFacilitiesForLocation(currentLocation);
+          if (nearbyCareStatus === 'accepted') {
+            queryCareFacilitiesForLocation(currentLocation);
+          }
         }
       });
     }
@@ -819,9 +889,36 @@
       const displayText = normalized.normalizedTranscript || text;
       addTranscriptMessage('user', displayText);
 
+      const turnId = 'turn_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+      isSubmittingTurn = true;
+      lastSubmittedTranscript = text.trim().toLowerCase();
+      lastSubmittedTurnId = turnId;
+      lastSubmittedTime = Date.now();
+
+      console.log('[TurnTelemetry]', {
+        turnId,
+        rawTranscript: text,
+        finalTranscript: displayText,
+        pendingActionBefore: pendingAction,
+        requestStartedAt: new Date().toISOString(),
+      });
+
+      if (isClientNegative(displayText)) {
+        if (pendingAction || nearbyCareStatus === 'pending' || displayText.toLowerCase().includes('clinic') || displayText.toLowerCase().includes('hospital') || displayText.includes('வேண்டாம்') || displayText.includes('இல்ல') || displayText.includes('नहीं')) {
+          nearbyCareStatus = 'declined';
+          pendingAction = null;
+          clearCareFacilities('declined');
+        }
+      } else if (isClientAffirmative(displayText)) {
+        if (pendingAction || nearbyCareStatus === 'pending') {
+          nearbyCareStatus = 'accepted';
+          pendingAction = null;
+        }
+      }
+
       if (useHttpTransport) {
         // HTTP/SSE mode: send via POST /api/chat
-        sendChatHTTP(displayText);
+        sendChatHTTP(displayText, { turnId });
       } else {
         // WebSocket mode: send via WS
         sendMessage({
@@ -831,6 +928,9 @@
           normalizedTranscript: displayText,
           medicalTerms: normalized.detectedMedicalTerms || [],
           isAmbiguous: normalized.isAmbiguous,
+          pendingAction,
+          nearbyCareStatus,
+          turnId,
         });
       }
 
@@ -968,7 +1068,8 @@
   /**
    * Send user speech via HTTP/SSE (used when WebSocket is unavailable)
    */
-  async function sendChatHTTP(text) {
+  async function sendChatHTTP(text, options = {}) {
+    const turnId = options.turnId || ('turn_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6));
     try {
       if (activeSSEAbortController) activeSSEAbortController.abort();
       activeSSEAbortController = new AbortController();
@@ -981,20 +1082,55 @@
           conversationHistory: httpConversationHistory,
           language: currentLanguage,
           location: currentLocation,
+          pendingAction,
+          nearbyCareStatus,
+          turnId,
         }),
         signal: activeSSEAbortController.signal,
       });
 
       await readSSEStream(response, (event) => {
-        if (event.type === 'done' && event.conversationHistory) {
-          httpConversationHistory = event.conversationHistory;
-          console.log('[App] HTTP chat done, history:', httpConversationHistory.length, 'messages');
+        if (event.type === 'done') {
+          isSubmittingTurn = false;
+          if (event.conversationHistory) {
+            httpConversationHistory = event.conversationHistory;
+            console.log('[App] HTTP chat done, history:', httpConversationHistory.length, 'messages');
+          }
+          if (event.pendingAction !== undefined) {
+            pendingAction = event.pendingAction;
+          }
+          if (event.nearbyCareStatus !== undefined) {
+            nearbyCareStatus = event.nearbyCareStatus;
+            if (nearbyCareStatus === 'declined') {
+              clearCareFacilities('declined');
+            }
+          }
+          console.log('[TurnTelemetry]', {
+            turnId: event.turnId || turnId,
+            pendingActionAfter: pendingAction,
+            nearbyCareStatusAfter: nearbyCareStatus,
+            requestCompletedAt: new Date().toISOString(),
+          });
+        }
+        if (event.type === 'pending_action_change') {
+          pendingAction = event.pendingAction;
+          if (pendingAction && nearbyCareStatus !== 'declined') {
+            nearbyCareStatus = 'pending';
+          }
+          console.log('[App] pendingAction changed to:', pendingAction);
+        }
+        if (event.type === 'nearby_care_status_change') {
+          nearbyCareStatus = event.nearbyCareStatus;
+          if (nearbyCareStatus === 'declined') {
+            clearCareFacilities('declined');
+          }
         }
         // Don't duplicate user transcript — chat API sends it, but we already added it client-side
         if (event.type === 'transcript' && event.role === 'user') return;
         handleServerMessage(event);
       });
     } catch (err) {
+      isSubmittingTurn = false;
       if (err.name === 'AbortError') return;
       console.error('[App] HTTP chat error:', err);
       updateState('listening');
@@ -1281,10 +1417,36 @@
         }
         break;
 
+      case 'pending_action_change':
+        pendingAction = message.pendingAction;
+        if (pendingAction && nearbyCareStatus !== 'declined') {
+          nearbyCareStatus = 'pending';
+        }
+        console.log('[App] WebSocket pendingAction updated to:', pendingAction);
+        break;
+
+      case 'nearby_care_status_change':
+        nearbyCareStatus = message.nearbyCareStatus;
+        if (nearbyCareStatus === 'declined') {
+          clearCareFacilities('declined');
+        }
+        console.log('[App] WebSocket nearbyCareStatus updated to:', nearbyCareStatus);
+        break;
+
       case 'done':
+        isSubmittingTurn = false;
         // HTTP/SSE transport: conversation complete, update history
         if (message.conversationHistory) {
           httpConversationHistory = message.conversationHistory;
+        }
+        if (message.pendingAction !== undefined) {
+          pendingAction = message.pendingAction;
+        }
+        if (message.nearbyCareStatus !== undefined) {
+          nearbyCareStatus = message.nearbyCareStatus;
+          if (nearbyCareStatus === 'declined') {
+            clearCareFacilities('declined');
+          }
         }
         break;
 
@@ -1351,6 +1513,11 @@
           console.log('[App] Dropping care_navigation_update for invalidated generation:', message.generationId);
           return;
         }
+        if (nearbyCareStatus === 'declined') {
+          console.log('[App] Dropping care_navigation_update: nearby care is declined');
+          return;
+        }
+        nearbyCareStatus = 'accepted';
         const navData = message.data || message;
         renderCareFacilities(navData.facilities || message.facilities, navData.urgencyLevel || message.urgencyLevel, navData.userLocation);
         break;
@@ -1488,9 +1655,12 @@
         };
       }
 
-      // ── Continuous Speech Accumulation ────────────────────────────────
+      // ── Gated Turn Finalization (Strictly on isFinal === true) ─────
+      // Interim speech must NEVER start a submission timer or trigger premature triage.
+      // If the user resumes speaking (new interim arrives), cancel any pending debounce timer.
       if (silenceTimer) {
         clearTimeout(silenceTimer);
+        silenceTimer = null;
       }
 
       let resolveSubmit;
@@ -1498,28 +1668,29 @@
         resolveSubmit = resolve;
       });
 
-      // Shorter timeout when final sentence recognition is completed (400ms),
-      // while keeping standard timeout (750ms) for interim in-progress speech
-      const activeTimeout = newFinal ? Math.min(silenceTimeoutMs, 400) : silenceTimeoutMs;
-
-      silenceTimer = setTimeout(() => {
-        const finalTextToSubmit = (turnFinalText + interimText).trim();
-        if (finalTextToSubmit) {
-          const currentlySpeaking = isSpeakingFn();
-          const curAssistantText = getAssistantTextFn ? getAssistantTextFn() : '';
-          if (currentlySpeaking && curAssistantText && isEchoText(finalTextToSubmit, curAssistantText)) {
-            console.log('[App] Filtered out acoustic speaker bleed:', finalTextToSubmit);
+      // ONLY start the debounce finalization timer if we have accumulated final speech
+      if (turnFinalText.trim().length > 0) {
+        silenceTimer = setTimeout(() => {
+          const finalTextToSubmit = turnFinalText.trim();
+          if (finalTextToSubmit) {
+            const currentlySpeaking = isSpeakingFn();
+            const curAssistantText = getAssistantTextFn ? getAssistantTextFn() : '';
+            if (currentlySpeaking && curAssistantText && isEchoText(finalTextToSubmit, curAssistantText)) {
+              console.log('[App] Filtered out acoustic speaker bleed:', finalTextToSubmit);
+              reset();
+              resolveSubmit(null);
+              return;
+            }
+            onSubmitSpeech(finalTextToSubmit);
             reset();
+            resolveSubmit(finalTextToSubmit);
+          } else {
             resolveSubmit(null);
-            return;
           }
-          onSubmitSpeech(finalTextToSubmit);
-          reset();
-          resolveSubmit(finalTextToSubmit);
-        } else {
-          resolveSubmit(null);
-        }
-      }, activeTimeout);
+        }, silenceTimeoutMs);
+      } else {
+        resolveSubmit(null);
+      }
 
       return {
         currentSpeech,
@@ -1585,8 +1756,27 @@
         sendMessage(msg);
       },
       onSubmitSpeech: (finalTextToSubmit) => {
+        const clean = (finalTextToSubmit || '').trim().toLowerCase();
+        if (!clean) return;
+
+        // Turn deduplication and single-flight enforcement
+        if (isSubmittingTurn) {
+          console.warn('[App] Turn submission already in-flight, dropping duplicate:', clean);
+          return;
+        }
+        if (clean === lastSubmittedTranscript && (Date.now() - lastSubmittedTime) < 1500) {
+          console.warn('[App] Dropping duplicate speech turn submission:', clean);
+          return;
+        }
+
+        const turnId = 'turn_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+        isSubmittingTurn = true;
+        lastSubmittedTranscript = clean;
+        lastSubmittedTurnId = turnId;
+        lastSubmittedTime = Date.now();
         lastUserTurnEndWallTime = performance.now();
-        console.log('[App] Submitting complete user speech:', finalTextToSubmit);
+
+        console.log('[App] Submitting complete user speech (turnId: ' + turnId + '):', finalTextToSubmit);
 
         // Normalize medical speech (Tamil, Hindi, English)
         let normalized = {
@@ -1604,9 +1794,30 @@
         const displayText = normalized.normalizedTranscript || finalTextToSubmit;
         addTranscriptMessage('user', displayText);
 
+        console.log('[TurnTelemetry]', {
+          turnId,
+          rawTranscript: finalTextToSubmit,
+          finalTranscript: displayText,
+          pendingActionBefore: pendingAction,
+          requestStartedAt: new Date().toISOString(),
+        });
+
+        if (isClientNegative(displayText)) {
+          if (pendingAction || nearbyCareStatus === 'pending' || displayText.toLowerCase().includes('clinic') || displayText.toLowerCase().includes('hospital') || displayText.includes('வேண்டாம்') || displayText.includes('இல்ல') || displayText.includes('नहीं')) {
+            nearbyCareStatus = 'declined';
+            pendingAction = null;
+            clearCareFacilities('declined');
+          }
+        } else if (isClientAffirmative(displayText)) {
+          if (pendingAction || nearbyCareStatus === 'pending') {
+            nearbyCareStatus = 'accepted';
+            pendingAction = null;
+          }
+        }
+
         if (useHttpTransport) {
           // HTTP/SSE mode: send via POST /api/chat
-          sendChatHTTP(displayText);
+          sendChatHTTP(displayText, { turnId });
         } else {
           // WebSocket mode: send via WS
           sendMessage({
@@ -1616,6 +1827,9 @@
             normalizedTranscript: displayText,
             medicalTerms: normalized.detectedMedicalTerms || [],
             isAmbiguous: normalized.isAmbiguous,
+            pendingAction,
+            nearbyCareStatus,
+            turnId,
           });
         }
 
@@ -1702,6 +1916,9 @@
 
   function updateState(state) {
     currentState = state;
+    if (state === 'listening' || state === 'idle') {
+      isSubmittingTurn = false;
+    }
 
     // Update state indicator
     stateIndicator.className = 'state-indicator ' + state;
@@ -1847,8 +2064,9 @@
     }
 
     // 4. Care Navigation / Verified Facilities Only (No Synthetic Clinics)
+    // Only render if user has accepted nearby care
     const careFacs = data.facilities || (data.careNavigation && data.careNavigation.facilities) || (Array.isArray(data.careNavigation) ? data.careNavigation : null);
-    if (careFacs) {
+    if (careFacs && nearbyCareStatus === 'accepted') {
       renderCareFacilities(careFacs, urgency);
     }
   }

@@ -70,11 +70,71 @@ function getSystemPrompt(language = 'en') {
   return SYSTEM_PROMPT_EN;
 }
 
+function isNegative(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase().trim();
+  const raw = text.trim();
+  // English
+  if (/^(no|nope|nah|no thanks|not now|no need|don't check|dont check|cancel|not really|nevermind|i'm good|im good|no clinic|no hospital)\b/i.test(lower)) return true;
+  if (/\b(don't check|dont check|do not check|no thanks|not now|no need|no clinic|no hospital|vendaam|rehne do)\b/i.test(lower)) return true;
+  // Tamil: இல்லை, வேண்டாம், இல்ல, வேணாம், வேண்டாம் பரவாயில்லை, வேண்டாம் clinic வேண்டாம், illai, vendaam
+  if (/^(illai|vendaam|illa|vendam|paravala|thevaiyillai)\b/i.test(lower)) return true;
+  if (raw.includes('இல்லை') || raw.includes('வேண்டாம்') || raw.includes('இல்ல') || raw.includes('வேணாம்') || raw.includes('பரவாயில்லை')) return true;
+  // Hindi: नहीं, ना, नहीं चाहिए, रहने दीजिए, रहने दो, अभी नहीं, नहीं धन्यवाद, nahi, nahin, rehne do
+  if (/^(nahi|nahin|na|rehne do|mat karo|abhi nahi|nahi chahiye)\b/i.test(lower)) return true;
+  if (raw.includes('नहीं') || raw.includes('ना') || raw.includes('नहीं चाहिए') || raw.includes('रहने दीजिए') || raw.includes('रहने दो') || raw.includes('मत')) return true;
+  return false;
+}
+
+function isAffirmative(text) {
+  if (!text) return false;
+  // Strict priority: Negative intent always overrides
+  if (isNegative(text)) return false;
+
+  const lower = text.toLowerCase().trim();
+  const raw = text.trim();
+  // English
+  if (/^(yes|yeah|yep|yup|sure|okay|ok|please do|certainly|go ahead|definitely|please check|check clinics|do that|sounds good|yes please)\b/i.test(lower)) return true;
+  // Code-switching & common variations (e.g., "ஆமா, check பண்ணுங்க", "check pannunga", "yes, காட்டுங்க")
+  if (/\b(yes|yeah|sure|okay|ok|check)\b/i.test(lower) && (raw.includes('பண்ணுங்க') || raw.includes('பாருங்க') || raw.includes('ஆமா') || raw.includes('காட்டு') || raw.includes('தேடு') || raw.includes('हाँ') || raw.includes('कहो') || raw.includes('करो') || raw.includes('दिखा'))) return true;
+  // Tamil: ஆமா, ஆமாம், சரி, பாருங்க, பண்ணுங்க, தேடுங்க, காட்டுங்க, செக் பண்ணுங்க, aama, check pannunga
+  if (/^(aama|aamam|sari|paarunga|pannunga|thedu|kaatunga|check pannunga)\b/i.test(lower)) return true;
+  if (raw.includes('ஆமா') || raw.includes('ஆமாம்') || raw.includes('சரி') || raw.includes('பாருங்க') || raw.includes('பண்ணுங்க') || raw.includes('தேடுங்க') || raw.includes('காட்டுங்க') || raw.includes('செக் பண்ணு')) return true;
+  // Hindi: हाँ, हां, हाँ जी, जी हाँ, ज़रूर, जरूर, दिखाइए, खोजिए, ठीक है, haan, zaroor, check karo
+  if (/^(haan|haanji|ji haan|zaroor|theek hai|sahi hai|check karo|dikhao|karo)\b/i.test(lower)) return true;
+  if (raw.includes('हाँ') || raw.includes('हां') || raw.includes('ज़रूर') || raw.includes('जरूर') || raw.includes('दिखाइए') || raw.includes('खोजिए') || raw.includes('ठीक है') || raw.includes('बताइए')) return true;
+  return false;
+}
+
+function detectClinicCheckOffer(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  if (/check available clinics nearby/i.test(lower) ||
+      /find the nearest emergency-capable clinic/i.test(lower) ||
+      /look up local clinic options/i.test(lower) ||
+      /find a clinic in your area/i.test(lower) ||
+      /help you find a clinic/i.test(lower) ||
+      /would you like me to (check|find|look up).*clinic/i.test(lower)) {
+    return true;
+  }
+  if (text.includes('வரைபடத்தில் காட்டவா') || text.includes('கிளினிக்குகளைப் பார்க்கவா') || text.includes('கிளினிக்கைத் தேட உதவட்டுமா')) {
+    return true;
+  }
+  if (text.includes('अस्पताल की जानकारी दिखाऊँ') || text.includes('क्लिनिक की तलाश करूँ') || text.includes('क्लिनिक खोजने में मदद करूँ')) {
+    return true;
+  }
+  return false;
+}
+
 class LLMClient {
   constructor(config = {}) {
     this.apiKey = config.apiKey || process.env.OPENAI_API_KEY;
     this.model = config.model || process.env.OPENAI_MODEL || 'gpt-4o';
     this.language = config.language || 'en';
+    this.pendingAction = config.pendingAction || null;
+    this.nearbyCareStatus = config.nearbyCareStatus || (this.pendingAction ? 'pending' : 'not_requested');
+    this.location = config.location || null;
+    this.careDeclined = config.careDeclined || (this.nearbyCareStatus === 'declined');
     this.client = null;
     if (this.isConfigured()) {
       const opts = { apiKey: this.apiKey };
@@ -165,6 +225,96 @@ class LLMClient {
   }
 
   /**
+   * Deterministic handler for pending actions like CHECK_NEARBY_CARE / CHECK_NEARBY_CLINICS
+   */
+  async _handlePendingAction(lastUserMsg, previousAssistantMsg, signal, onTextChunk, onToolCall) {
+    const startTime = Date.now();
+    const lang = this.language || 'en';
+
+    if (isAffirmative(lastUserMsg)) {
+      this.pendingAction = null;
+      this.nearbyCareStatus = 'accepted';
+      let careType = 'urgent_care';
+      const lastToolMsg = [...this.conversationHistory].reverse().find(m => m.role === 'tool');
+      if (lastToolMsg) {
+        try {
+          const data = JSON.parse(lastToolMsg.content);
+          if (data.possibleConditions?.some(c => c.urgency === 'high' || c.urgency === 'emergency')) {
+            careType = 'emergency';
+          }
+        } catch (e) {}
+      }
+      if (/emergency|hospital|அவசர|மருத்துவமனை|ஆपातकालीन|अस्पताल/i.test(previousAssistantMsg)) {
+        careType = 'emergency';
+      }
+
+      const toolCallId = 'call_act_' + Math.random().toString(36).substring(2, 9);
+      const facilityArgs = {
+        careType,
+        urgencyLevel: careType === 'emergency' ? 'high' : 'medium'
+      };
+      if (this.location && this.location.lat !== null && this.location.lat !== undefined && this.location.lon !== null && this.location.lon !== undefined) {
+        facilityArgs.lat = this.location.lat;
+        facilityArgs.lon = this.location.lon;
+        if (this.location.city) facilityArgs.locationName = this.location.city;
+      }
+
+      const toolCalls = [{
+        id: toolCallId,
+        type: 'function',
+        function: {
+          name: 'findNearbyCareFacilities',
+          arguments: JSON.stringify(facilityArgs)
+        }
+      }];
+
+      this.addAssistantToolCall(toolCalls, null);
+
+      if (onToolCall && !signal?.aborted) {
+        await onToolCall('findNearbyCareFacilities', facilityArgs, toolCallId);
+      }
+
+      return {
+        cancelled: false,
+        text: '',
+        toolCalls: [{ id: toolCallId, name: 'findNearbyCareFacilities', arguments: facilityArgs }],
+        firstTokenMs: 50,
+        totalMs: Date.now() - startTime,
+      };
+    } else if (isNegative(lastUserMsg)) {
+      this.pendingAction = null;
+      this.nearbyCareStatus = 'declined';
+      this.careDeclined = true;
+      let responseText = '';
+      if (lang === 'ta') {
+        responseText = "சரி, புரிந்து கொண்டேன். உங்கள் அறிகுறிகள் மாறினாலோ அல்லது வேறு ஏதேனும் உதவி தேவைப்பட்டாலோ தெரிவிக்கவும்.";
+      } else if (lang === 'hi') {
+        responseText = "ठीक है, समझ गया। यदि लक्षणों में कोई बदलाव हो या अन्य सहायता चाहिए तो अवश्य बताएं।";
+      } else {
+        responseText = "Understood. Please let me know if your symptoms change or if you need help with anything else.";
+      }
+
+      const sentences = responseText.match(/[^.!?।]+[.!?।]+/g) || [responseText];
+      let fullText = '';
+      for (const s of sentences) {
+        if (signal?.aborted) return { cancelled: true, text: fullText, toolCalls: [] };
+        await new Promise(r => setTimeout(r, 40));
+        fullText += s;
+        onTextChunk(s);
+      }
+
+      this.addAssistantMessage(fullText);
+      return {
+        cancelled: false,
+        text: fullText,
+        toolCalls: [],
+        firstTokenMs: 40,
+        totalMs: Date.now() - startTime,
+      };
+    }
+  }
+
+  /**
    * Stream a chat completion, returning chunks as they arrive.
    * Supports function calling for tools.
    * 
@@ -174,6 +324,18 @@ class LLMClient {
    * @returns {Promise<object>} The complete response metadata
    */
   async streamCompletion(signal, onTextChunk, onToolCall) {
+    const lastUserMsg = [...this.conversationHistory].reverse().find(m => m.role === 'user')?.content || '';
+    const previousAssistantMsg = [...this.conversationHistory].reverse().find(m => m.role === 'assistant' && m.content)?.content || '';
+    const hasClinicOffer = this.pendingAction === 'CHECK_NEARBY_CLINICS' ||
+      this.pendingAction === 'CHECK_NEARBY_CARE' ||
+      this.nearbyCareStatus === 'pending' ||
+      detectClinicCheckOffer(previousAssistantMsg);
+
+    if ((hasClinicOffer && (isAffirmative(lastUserMsg) || isNegative(lastUserMsg))) ||
+        (isNegative(lastUserMsg) && (lastUserMsg.toLowerCase().includes('clinic') || lastUserMsg.toLowerCase().includes('hospital') || lastUserMsg.includes('கிளினிக்') || lastUserMsg.includes('மருத்துவமனை') || lastUserMsg.includes('अस्पताल')))) {
+      return this._handlePendingAction(lastUserMsg, previousAssistantMsg, signal, onTextChunk, onToolCall);
+    }
+
     if (!this.isConfigured() || !this.client) {
       return this._simulateCompletion(signal, onTextChunk, onToolCall);
     }
@@ -270,6 +432,16 @@ class LLMClient {
         if (onToolCall) {
           await onToolCall(tc.name, tc.arguments, tc.id);
         }
+      }
+
+      if (detectClinicCheckOffer(fullText) && !this.careDeclined && this.nearbyCareStatus !== 'declined') {
+        this.pendingAction = 'CHECK_NEARBY_CARE';
+        this.nearbyCareStatus = 'pending';
+      }
+
+      if (detectClinicCheckOffer(fullText) && !this.careDeclined && this.nearbyCareStatus !== 'declined') {
+        this.pendingAction = 'CHECK_NEARBY_CARE';
+        this.nearbyCareStatus = 'pending';
       }
 
       return {
@@ -440,20 +612,23 @@ class LLMClient {
       { canonical: 'rash', triggers: ['rash', 'hives', 'itching', 'itchy skin', 'bumps', 'red spots', 'skin irritation', 'அரிப்பு', 'தடிப்பு', 'खुजली', 'चकत्ते'] }
     ];
 
-    const detected = [];
+    const currentTurnDetected = [];
     for (const item of SYMPTOM_PATTERNS) {
       if (item.triggers.some(t => lower.includes(t.toLowerCase()))) {
-        detected.push(item.canonical);
+        currentTurnDetected.push(item.canonical);
       }
     }
 
-    // Also pull in symptoms mentioned in previous turns of this session
-    for (const msg of this.conversationHistory) {
-      if (msg.role === 'user') {
-        const msgLower = msg.content.toLowerCase();
-        for (const item of SYMPTOM_PATTERNS) {
-          if (!detected.includes(item.canonical) && item.triggers.some(t => msgLower.includes(t.toLowerCase()))) {
-            detected.push(item.canonical);
+    const detected = [...currentTurnDetected];
+    // Only enrich with symptoms mentioned in previous turns if the user reported symptoms in this current turn
+    if (currentTurnDetected.length > 0) {
+      for (const msg of this.conversationHistory) {
+        if (msg.role === 'user') {
+          const msgLower = msg.content.toLowerCase();
+          for (const item of SYMPTOM_PATTERNS) {
+            if (!detected.includes(item.canonical) && item.triggers.some(t => msgLower.includes(t.toLowerCase()))) {
+              detected.push(item.canonical);
+            }
           }
         }
       }
@@ -587,6 +762,10 @@ class LLMClient {
     }
 
     this.addAssistantMessage(fullText);
+    if (detectClinicCheckOffer(fullText) && !this.careDeclined && this.nearbyCareStatus !== 'declined') {
+      this.pendingAction = 'CHECK_NEARBY_CARE';
+      this.nearbyCareStatus = 'pending';
+    }
     return {
       cancelled: false,
       text: fullText,
@@ -629,25 +808,40 @@ class LLMClient {
       const second = toolData.possibleConditions[1];
       const hasEmergency = toolData.possibleConditions.some(c => c.urgency === 'high' || c.urgency === 'emergency');
 
+      const offerCare = !this.careDeclined && this.nearbyCareStatus !== 'declined';
       if (lang === 'ta') {
         if (hasEmergency) {
-          responseText = `உங்கள் அறிகுறிகளைப் பார்க்கும்போது, இது ${top.condition} ஆக இருக்க வாய்ப்புள்ளது. இது அவசர கவனிப்பு தேவைப்படலாம் என்பதால், உடனடியாக அவசர சிகிச்சை மையத்தை அணுகுமாறு பரிந்துரைக்கிறேன். உங்களுக்கு அருகில் உள்ள அவசர மருத்துவமனையை வரைபடத்தில் காட்டவா?`;
+          responseText = offerCare
+            ? `உங்கள் அறிகுறிகளைப் பார்க்கும்போது, இது ${top.condition} ஆக இருக்க வாய்ப்புள்ளது. இது அவசர கவனிப்பு தேவைப்படலாம் என்பதால், உடனடியாக அவசர சிகிச்சை மையத்தை அணுகுமாறு பரிந்துரைக்கிறேன். உங்களுக்கு அருகில் உள்ள அவசர மருத்துவமனையை வரைபடத்தில் காட்டவா?`
+            : `உங்கள் அறிகுறிகளைப் பார்க்கும்போது, இது ${top.condition} ஆக இருக்க வாய்ப்புள்ளது. இது அவசர கவனிப்பு தேவைப்படலாம் என்பதால், உடனடியாக அவசர சிகிச்சை மையத்தை அணுகுமாறு பரிந்துரைக்கிறேன். தேவைப்பட்டால் அவசர உதவி எண் 108-ஐ அழைக்கவும்.`;
         } else {
-          responseText = `உங்கள் அறிகுறிகளை ஆராய்ந்ததில், இது ${top.condition} நிலையுடன் ஒத்துப்போகிறது. போதுமான ஓய்வெடுத்து நீர் அருந்துங்கள். அறிகுறிகள் தொடர்ந்தால் மருத்துவரை அணுகவும். உங்களுக்கு அருகில் உள்ள கிளினிக்குகளைப் பார்க்கவா?`;
+          responseText = offerCare
+            ? `உங்கள் அறிகுறிகளை ஆராய்ந்ததில், இது ${top.condition} நிலையுடன் ஒத்துப்போகிறது. போதுமான ஓய்வெடுத்து நீர் அருந்துங்கள். அறிகுறிகள் தொடர்ந்தால் மருத்துவரை அணுகவும். உங்களுக்கு அருகில் உள்ள கிளினிக்குகளைப் பார்க்கவா?`
+            : `உங்கள் அறிகுறிகளை ஆராய்ந்ததில், இது ${top.condition} நிலையுடன் ஒத்துப்போகிறது. போதுமான ஓய்வெடுத்து நீர் அருந்துங்கள். அறிகுறிகள் மாறினால் தயங்காமல் தெரிவிக்கவும்.`;
         }
       } else if (lang === 'hi') {
         if (hasEmergency) {
-          responseText = `आपके लक्षणों के आधार पर, यह ${top.condition} का संकेत हो सकता है। यह गंभीर स्थिति हो सकती है, इसलिए तुरंत आपातकालीन चिकित्सा सहायता लेने की सलाह दी जाती है। क्या मैं आपके नजदीकी अस्पताल की जानकारी दिखाऊँ?`;
+          responseText = offerCare
+            ? `आपके लक्षणों के आधार पर, यह ${top.condition} का संकेत हो सकता है। यह गंभीर स्थिति हो सकती है, इसलिए तुरंत आपातकालीन चिकित्सा सहायता लेने की सलाह दी जाती है। क्या मैं आपके नजदीकी अस्पताल की जानकारी दिखाऊँ?`
+            : `आपके लक्षणों के आधार पर, यह ${top.condition} का संकेत हो सकता है। यह गंभीर स्थिति हो सकती है, इसलिए तुरंत आपातकालीन चिकित्सा सहायता लेने की सलाह दी जाती है।`;
         } else {
-          responseText = `आपके लक्षणों के अनुसार, यह ${top.condition} की ओर संकेत करता है। कृपया पर्याप्त आराम करें और पानी पिएं। यदि सुधार न हो तो डॉक्टर से परामर्श लें। क्या मैं पास के क्लिनिक की तलाश करूँ?`;
+          responseText = offerCare
+            ? `आपके लक्षणों के अनुसार, यह ${top.condition} की ओर संकेत करता है। कृपया पर्याप्त आराम करें और पानी पिएं। यदि सुधार न हो तो डॉक्टर से परामर्श लें। क्या मैं पास के क्लिनिक की तलाश करूँ?`
+            : `आपके लक्षणों के अनुसार, यह ${top.condition} की ओर संकेत करता है। कृपया पर्याप्त आराम करें और पानी पिएं। यदि सुधार न हो तो मुझे अवश्य बताएं।`;
         }
       } else {
         if (hasEmergency) {
-          responseText = `Based on what you've described, this could potentially indicate ${top.condition}. Because these symptoms can be serious, I strongly recommend seeking medical evaluation right away or going to an urgent care clinic. Would you like me to find the nearest emergency-capable clinic for you?`;
+          responseText = offerCare
+            ? `Based on what you've described, this could potentially indicate ${top.condition}. Because these symptoms can be serious, I strongly recommend seeking medical evaluation right away or going to an urgent care clinic. Would you like me to find the nearest emergency-capable clinic for you?`
+            : `Based on what you've described, this could potentially indicate ${top.condition}. Because these symptoms can be serious, I strongly recommend seeking medical evaluation right away or going to an urgent care clinic.`;
         } else if (second) {
-          responseText = `Based on your symptoms, the triage analysis points towards ${top.condition}, or possibly ${second.condition}. In the meantime, rest and stay well-hydrated. If your symptoms don't improve or start getting worse, I'd recommend having a healthcare provider take a look. Would you like me to check available clinics nearby?`;
+          responseText = offerCare
+            ? `Based on your symptoms, the triage analysis points towards ${top.condition}, or possibly ${second.condition}. In the meantime, rest and stay well-hydrated. If your symptoms don't improve or start getting worse, I'd recommend having a healthcare provider take a look. Would you like me to check available clinics nearby?`
+            : `Based on your symptoms, the triage analysis points towards ${top.condition}, or possibly ${second.condition}. In the meantime, rest and stay well-hydrated. If your symptoms don't improve or start getting worse, I'd recommend having a healthcare provider take a look.`;
         } else {
-          responseText = `Based on what you've shared, this looks consistent with ${top.condition}. I suggest resting and drinking plenty of fluids. If things don't improve over the next day or two, please consult with a doctor. Would you like me to look up local clinic options?`;
+          responseText = offerCare
+            ? `Based on what you've shared, this looks consistent with ${top.condition}. I suggest resting and drinking plenty of fluids. If things don't improve over the next day or two, please consult with a doctor. Would you like me to look up local clinic options?`
+            : `Based on what you've shared, this looks consistent with ${top.condition}. I suggest resting and drinking plenty of fluids. If things don't improve over the next day or two, please consult with a doctor.`;
         }
       }
     } else {
@@ -670,6 +864,10 @@ class LLMClient {
     }
 
     this.addAssistantMessage(fullText);
+    if (detectClinicCheckOffer(fullText) && !this.careDeclined && this.nearbyCareStatus !== 'declined') {
+      this.pendingAction = 'CHECK_NEARBY_CARE';
+      this.nearbyCareStatus = 'pending';
+    }
     return {
       cancelled: false,
       text: fullText,
@@ -728,3 +926,6 @@ class LLMClient {
 }
 
 module.exports = LLMClient;
+module.exports.isAffirmative = isAffirmative;
+module.exports.isNegative = isNegative;
+module.exports.detectClinicCheckOffer = detectClinicCheckOffer;

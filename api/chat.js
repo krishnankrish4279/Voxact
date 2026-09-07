@@ -19,7 +19,7 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { text, conversationHistory, language, location } = req.body || {};
+  const { text, conversationHistory, language, location, pendingAction, nearbyCareStatus, turnId } = req.body || {};
 
   if (!text || !text.trim()) {
     return res.status(400).json({ error: 'No text provided' });
@@ -43,7 +43,12 @@ module.exports = async function handler(req, res) {
     const genId = 'gen_' + Date.now().toString(36);
 
     // ─── Initialize components ─────────────────────────────────────
-    const llm = new LLMClient({ language: lang });
+    const llm = new LLMClient({
+      language: lang,
+      pendingAction: pendingAction || null,
+      nearbyCareStatus: nearbyCareStatus || 'not_requested',
+      location: location || null
+    });
     const rime = new RimeClient({ language: lang });
     rime.useWebSocket = false; // Force HTTP-only for serverless
     const filler = new FillerManager(lang);
@@ -184,21 +189,25 @@ module.exports = async function handler(req, res) {
         send({ type: 'triage_update', toolName, data: toolResult, generationId: genId });
       }
 
-      // 4. Clinical bundle for analyzeSymptoms (urgency + clinics + care nav)
+      // 4. Clinical bundle for analyzeSymptoms (urgency + clinics)
+      // Care navigation only included if user has explicitly accepted nearby care
       if (toolName === 'analyzeSymptoms' && toolResult && !toolResult.error) {
         try {
           const urgency = await TOOL_FUNCTIONS['calculateUrgency'](toolResult, null);
           const clinics = await TOOL_FUNCTIONS['findNearestClinics'](urgency.urgencyLevel, null);
           let careNav = null;
-          try {
-            careNav = await TOOL_FUNCTIONS['findNearbyCareFacilities']({
-              urgencyLevel: urgency.urgencyLevel,
-              lat: location?.lat ?? null,
-              lon: location?.lon ?? (location?.lng ?? null),
-              locationName: location?.city ?? 'Current Location',
-              language: lang,
-            }, null);
-          } catch (e) { /* ignore */ }
+          if (llm.nearbyCareStatus === 'accepted') {
+            try {
+              careNav = await TOOL_FUNCTIONS['findNearbyCareFacilities']({
+                urgencyLevel: urgency.urgencyLevel,
+                lat: location?.lat ?? null,
+                lon: location?.lon ?? (location?.lng ?? null),
+                locationName: location?.city ?? 'Current Location',
+                language: lang,
+                allowFallback: false,
+              }, null);
+            } catch (e) { /* ignore */ }
+          }
 
           send({
             type: 'triage_update',
@@ -301,9 +310,23 @@ module.exports = async function handler(req, res) {
       }
     }
 
+    if (llm.pendingAction !== pendingAction) {
+      send({ type: 'pending_action_change', pendingAction: llm.pendingAction || null });
+    }
+
+    if (llm.nearbyCareStatus !== nearbyCareStatus) {
+      send({ type: 'nearby_care_status_change', nearbyCareStatus: llm.nearbyCareStatus || 'not_requested' });
+    }
+
     // ─── Done ──────────────────────────────────────────────────────
     send({ type: 'state_change', state: 'listening' });
-    send({ type: 'done', conversationHistory: llm.conversationHistory });
+    send({
+      type: 'done',
+      conversationHistory: llm.conversationHistory,
+      pendingAction: llm.pendingAction || null,
+      nearbyCareStatus: llm.nearbyCareStatus || 'not_requested',
+      turnId: turnId || null,
+    });
 
   } catch (err) {
     console.error('[api/chat] Error:', err);

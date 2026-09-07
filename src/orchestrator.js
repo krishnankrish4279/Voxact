@@ -78,6 +78,9 @@ class Orchestrator extends EventEmitter {
     this.staleResultsFenced = 0;
     this.staleResultsSpoken = 0;
 
+    this.pendingAction = options.pendingAction || null;
+    this.nearbyCareStatus = options.nearbyCareStatus || 'not_requested';
+
     // Initialize conversation
     this.llm.initConversation();
 
@@ -492,15 +495,18 @@ class Orchestrator extends EventEmitter {
           const urgency = await TOOL_FUNCTIONS['calculateUrgency'](analysis, signal);
           const clinics = await TOOL_FUNCTIONS['findNearestClinics'](urgency.urgencyLevel, signal);
           let careNav = null;
-          try {
-            careNav = await TOOL_FUNCTIONS['findNearbyCareFacilities']({
-              urgencyLevel: urgency.urgencyLevel,
-              lat: this.sessionLocation?.lat ?? null,
-              lon: this.sessionLocation?.lon ?? null,
-              locationName: this.sessionLocation?.city ?? 'Current Location',
-              language: this.language,
-            }, signal);
-          } catch (e) {}
+          if (this.nearbyCareStatus === 'accepted') {
+            try {
+              careNav = await TOOL_FUNCTIONS['findNearbyCareFacilities']({
+                urgencyLevel: urgency.urgencyLevel,
+                lat: this.sessionLocation?.lat ?? null,
+                lon: this.sessionLocation?.lon ?? null,
+                locationName: this.sessionLocation?.city ?? 'Current Location',
+                language: this.language,
+                allowFallback: false,
+              }, signal);
+            } catch (e) {}
+          }
 
           this.sendToClient({
             type: 'triage_update',
@@ -568,6 +574,22 @@ class Orchestrator extends EventEmitter {
       );
 
       if (!this._isCurrentGeneration(genId)) return;
+
+      if (this.llm.pendingAction !== this.pendingAction) {
+        this.pendingAction = this.llm.pendingAction;
+        this.sendToClient({
+          type: 'pending_action_change',
+          pendingAction: this.pendingAction,
+        });
+      }
+
+      if (this.llm.nearbyCareStatus !== this.nearbyCareStatus) {
+        this.nearbyCareStatus = this.llm.nearbyCareStatus;
+        this.sendToClient({
+          type: 'nearby_care_status_change',
+          nearbyCareStatus: this.nearbyCareStatus,
+        });
+      }
 
       this.latency.recordEvent(this.sessionId, genId, 'llm_complete');
 
@@ -766,6 +788,22 @@ class Orchestrator extends EventEmitter {
       );
 
       if (!this._isCurrentGeneration(genId)) return;
+
+      if (this.llm.pendingAction !== this.pendingAction) {
+        this.pendingAction = this.llm.pendingAction;
+        this.sendToClient({
+          type: 'pending_action_change',
+          pendingAction: this.pendingAction,
+        });
+      }
+
+      if (this.llm.nearbyCareStatus !== this.nearbyCareStatus) {
+        this.nearbyCareStatus = this.llm.nearbyCareStatus;
+        this.sendToClient({
+          type: 'nearby_care_status_change',
+          nearbyCareStatus: this.nearbyCareStatus,
+        });
+      }
 
       // Handle remaining text
       if (followUpSentenceBuffer.trim().length > 0) {

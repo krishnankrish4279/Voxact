@@ -300,56 +300,81 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
   }
 
   let rawFacilities = [];
+  let liveSearchAttempted = false;
+  let liveSearchSucceeded = false;
 
-  // Attempt live Nominatim search around user's actual device coordinates
-  try {
-    const queryTerm = targetCategory === 'emergency' ? 'hospital' : (targetCategory === 'urgent_care' ? 'urgent care' : 'clinic');
-    const delta = 0.12;
-    const viewbox = `${userLon - delta},${userLat + delta},${userLon + delta},${userLat - delta}`;
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(queryTerm)}&format=json&addressdetails=1&limit=6&viewbox=${viewbox}&bounded=1`;
+  // Progressive radius live Nominatim search around user's actual device coordinates
+  // Start with local 5 km radius (~0.045 deg). If 0 results, expand to 10 km (~0.090 deg).
+  const searchRadii = [
+    { radiusKm: 5, delta: 0.045 },
+    { radiusKm: 10, delta: 0.090 }
+  ];
 
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'VoxAct-MedicalTriage/1.0 (Hackathon Care Navigation; contact@voxact.org)'
-      },
-      signal
-    });
+  const queryTerm = targetCategory === 'emergency'
+    ? 'hospital'
+    : (targetCategory === 'urgent_care' ? 'urgent care' : 'clinic');
 
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        rawFacilities = data.map((item, idx) => {
-          const itemLat = parseFloat(item.lat);
-          const itemLon = parseFloat(item.lon);
-          const dist = calculateDistanceMiles(userLat, userLon, itemLat, itemLon);
-          const isHospital = item.type === 'hospital' || (item.display_name && item.display_name.toLowerCase().includes('hospital'));
+  for (const { radiusKm, delta } of searchRadii) {
+    if (rawFacilities.length > 0 || signal?.aborted) break;
 
-          return {
-            id: `osm_${item.osm_id || idx}`,
-            name: item.name || (item.display_name ? item.display_name.split(',')[0].trim() : 'Healthcare Facility'),
-            careType: isHospital ? 'Emergency Department' : (targetCategory === 'urgent_care' ? 'Urgent Care' : 'Walk-In Clinic'),
-            category: isHospital ? 'emergency' : targetCategory,
-            address: item.display_name,
-            lat: itemLat,
-            lon: itemLon,
-            distanceMiles: dist,
-            distance: `${dist} mi`,
-            emergencyCapable: isHospital,
-            capabilities: isHospital ? ['emergency', 'high', 'medium', 'low'] : ['medium', 'low'],
-            openStatus: null, // DO NOT fabricate: null if API does not provide
-            rating: null,     // DO NOT fabricate: null if API does not provide
-            reviewCount: null // DO NOT fabricate: null if API does not provide
-          };
-        });
+    try {
+      liveSearchAttempted = true;
+      const viewbox = `${userLon - delta},${userLat + delta},${userLon + delta},${userLat - delta}`;
+      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(queryTerm)}&format=json&addressdetails=1&limit=8&viewbox=${viewbox}&bounded=1`;
+
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': 'VoxAct-MedicalTriage/1.0 (Hackathon Care Navigation; contact@voxact.org)'
+        },
+        signal
+      });
+
+      if (res.ok) {
+        liveSearchSucceeded = true;
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          rawFacilities = data.map((item, idx) => {
+            const itemLat = parseFloat(item.lat);
+            const itemLon = parseFloat(item.lon);
+            const dist = calculateDistanceMiles(userLat, userLon, itemLat, itemLon);
+            const isHospital = item.type === 'hospital' || (item.display_name && item.display_name.toLowerCase().includes('hospital'));
+
+            return {
+              id: `osm_${item.osm_id || idx}`,
+              name: item.name || (item.display_name ? item.display_name.split(',')[0].trim() : 'Healthcare Facility'),
+              careType: isHospital ? 'Emergency Department' : (targetCategory === 'urgent_care' ? 'Urgent Care' : 'Walk-In Clinic'),
+              category: isHospital ? 'emergency' : targetCategory,
+              address: item.display_name,
+              lat: itemLat,
+              lon: itemLon,
+              distanceMiles: dist,
+              distance: `${dist} mi`,
+              emergencyCapable: isHospital,
+              capabilities: isHospital ? ['emergency', 'high', 'medium', 'low'] : ['medium', 'low'],
+              isFallback: false,
+              fallbackLabel: null,
+              openStatus: null, // DO NOT fabricate
+              rating: null,     // DO NOT fabricate
+              reviewCount: null // DO NOT fabricate
+            };
+          });
+        }
       }
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      // Network failure / offline
     }
-  } catch (err) {
-    if (signal?.aborted) throw err;
-    // Graceful fallback to verified catalog
   }
 
-  // If live query yielded 0 results or failed, use verified real catalog ONLY if within 50 miles
-  if (rawFacilities.length === 0) {
+  // Fallback Handling (Requirement C):
+  // - If live search returned 0 valid facilities, do NOT silently inject VERIFIED_FACILITIES.
+  // - Fallback catalog is ONLY used if explicitly allowed (options.allowFallback) or if live network completely failed and allowFallback is not false.
+  // - Any fallback data MUST be clearly labeled: "Demo fallback — not live nearby data".
+  const allowFallback = options.allowFallback !== undefined
+    ? Boolean(options.allowFallback)
+    : (!liveSearchSucceeded && options.allowFallback !== false);
+
+  if (rawFacilities.length === 0 && allowFallback) {
     rawFacilities = VERIFIED_FACILITIES
       .map(fac => {
         const dist = calculateDistanceMiles(userLat, userLon, fac.lat, fac.lon);
@@ -358,27 +383,30 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
           distanceMiles: dist,
           distance: `${dist} mi`,
           isFallback: true,
-          fallbackLabel: 'Verified fallback facility — demo fallback',
-          openStatus: null, // No fabricated status
-          rating: null,     // No fabricated rating
-          reviewCount: null // No fabricated reviews
+          fallbackLabel: 'Demo fallback — not live nearby data',
+          openStatus: null,
+          rating: null,
+          reviewCount: null
         };
       })
-      .filter(fac => fac.distanceMiles <= 50); // Do NOT recommend distant facilities thousands of miles away
+      .filter(fac => fac.distanceMiles <= 50); // 50-mile proximity guard
   }
 
-  // Rank facilities using REAL available data:
-  // 1. Care type appropriateness match (Emergency vs Urgent Care vs Primary Care)
-  // 2. Distance
-  // 3. Verified emergency capability if condition is high-urgency
+  // NEAREST FACILITY FIRST (Requirement E & G):
+  // Sort candidate facilities by clinical appropriateness then actual distance (nearest first).
+  // Real distance calculated from userLat/userLon -> facilityLat/facilityLon.
   const ranked = [...rawFacilities].sort((a, b) => {
-    const aMatch = (a.category === targetCategory) ? 2 : (a.emergencyCapable && isEmergency ? 3 : 0);
-    const bMatch = (b.category === targetCategory) ? 2 : (b.emergencyCapable && isEmergency ? 3 : 0);
-
-    if (aMatch !== bMatch) {
-      return bMatch - aMatch;
+    if (isEmergency) {
+      const aEmerg = a.emergencyCapable ? 1 : 0;
+      const bEmerg = b.emergencyCapable ? 1 : 0;
+      if (aEmerg !== bEmerg) return bEmerg - aEmerg;
+    } else if (urgencyLevel === 'low') {
+      const aNonEmerg = !a.emergencyCapable ? 1 : 0;
+      const bNonEmerg = !b.emergencyCapable ? 1 : 0;
+      if (aNonEmerg !== bNonEmerg) return bNonEmerg - aNonEmerg;
     }
-    return (a.distanceMiles || 999) - (b.distanceMiles || 999);
+    // Primary distance sort: nearest first
+    return (a.distanceMiles ?? 999) - (b.distanceMiles ?? 999);
   });
 
   const topRecommendations = ranked.slice(0, 3).map((f, index) => ({
@@ -395,7 +423,7 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
     phone: f.phone || null,
     emergencyCapable: Boolean(f.emergencyCapable),
     isFallback: Boolean(f.isFallback),
-    fallbackLabel: f.isFallback ? 'Verified fallback facility — demo fallback' : null,
+    fallbackLabel: f.isFallback ? 'Demo fallback — not live nearby data' : null,
     openStatus: f.openStatus || null,
     rating: f.rating || null,
     reviewCount: f.reviewCount || null,
@@ -414,7 +442,7 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
     } else if (topRecommendations.length > 0) {
       spokenSummary = `உங்கள் அறிகுறிகளுக்கு ஏற்ற ${topRecommendations.length} சிகிச்சை மையங்களை வரைபடத்தில் கண்டறிந்துள்ளேன். இதில் மிக அருகில் இருப்பது ${top ? top.name : ''} (${top ? top.distance : ''}). வரைபடத்தில் விவரங்களைப் பார்க்கலாம்.`;
     } else {
-      spokenSummary = 'உங்கள் இருப்பிடத்திற்கு அருகில் 50 மைல் தொலைவில் சிகிச்சை மையங்கள் எதுவும் கிடைக்கவில்லை. அவசர நிலை என்றால் தயவுசெய்து உடனடியாக 108 அல்லது 112 என்ற எண்ணை அழைக்கவும்.';
+      spokenSummary = 'நேரடித் தேடலில் அருகில் சிகிச்சை மையங்கள் எதுவும் கிடைக்கவில்லை. அவசர நிலை என்றால் தயவுசெய்து உடனடியாக 108 அல்லது 112 என்ற எண்ணை அழைக்கவும்.';
     }
   } else if (language === 'hi') {
     if (isEmergency) {
@@ -424,7 +452,7 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
     } else if (topRecommendations.length > 0) {
       spokenSummary = `मैंने आपकी स्थिति के लिए ${topRecommendations.length} उपयुक्त स्वास्थ्य केंद्र खोजे हैं। सबसे नजदीकी विकल्प ${top ? top.name : ''} (${top ? top.distance : ''}) है। आप मानचित्र पर विवरण देख सकते हैं।`;
     } else {
-      spokenSummary = 'आपके स्थान से 50 मील के दायरे में कोई स्वास्थ्य केंद्र नहीं मिला। आपात स्थिति में तुरंत 112 पर कॉल करें।';
+      spokenSummary = 'लाइव खोज से पास में कोई स्वास्थ्य केंद्र नहीं मिला। आपात स्थिति में तुरंत 112 पर कॉल करें।';
     }
   } else {
     const inIndia = isIndiaRegion(userLat, userLon, locationName);
@@ -437,7 +465,7 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
     } else if (topRecommendations.length > 0) {
       spokenSummary = `I've found ${topRecommendations.length} recommended care options based on your symptoms and urgency level. The closest option is ${top ? top.name : 'a local clinic'} about ${top ? top.distance : 'nearby'}. I've placed them on the map for you.`;
     } else {
-      spokenSummary = `No nearby verified facility found within 50 miles of your location. In an emergency, please call ${emergencyNum} immediately.`;
+      spokenSummary = `No nearby facilities found from the live search. In an emergency, please call ${emergencyNum} immediately.`;
     }
   }
 
