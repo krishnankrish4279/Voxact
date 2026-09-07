@@ -93,6 +93,11 @@
   let currentLocation = null; // Dynamically detected via browser geolocation
   let latestCareFacilities = [];
 
+  // ─── HTTP/SSE Transport (for Vercel serverless) ────────────────
+  let useHttpTransport = false;
+  let httpConversationHistory = []; // Maintained client-side for stateless serverless
+  let activeSSEAbortController = null; // Abort in-flight SSE requests on interruption
+
   const LANGUAGE_CONFIGS = {
     en: {
       rimeBadge: 'Rime Mist v3 (cove)',
@@ -814,14 +819,20 @@
       const displayText = normalized.normalizedTranscript || text;
       addTranscriptMessage('user', displayText);
 
-      sendMessage({
-        type: 'user_speech',
-        text: displayText,
-        rawTranscript: text,
-        normalizedTranscript: displayText,
-        medicalTerms: normalized.detectedMedicalTerms || [],
-        isAmbiguous: normalized.isAmbiguous,
-      });
+      if (useHttpTransport) {
+        // HTTP/SSE mode: send via POST /api/chat
+        sendChatHTTP(displayText);
+      } else {
+        // WebSocket mode: send via WS
+        sendMessage({
+          type: 'user_speech',
+          text: displayText,
+          rawTranscript: text,
+          normalizedTranscript: displayText,
+          medicalTerms: normalized.detectedMedicalTerms || [],
+          isAmbiguous: normalized.isAmbiguous,
+        });
+      }
 
       const localSymptoms = extractClientSymptoms(displayText);
       if (localSymptoms.length > 0 && symptomTags) {
@@ -887,6 +898,109 @@
     }
   }
 
+  // ─── HTTP/SSE Transport Helpers ───────────────────────────────
+
+  /**
+   * Read a Server-Sent Events stream from a fetch response.
+   * Parses each `data: {...}\n\n` event and calls onEvent.
+   */
+  async function readSSEStream(response, onEvent) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Parse complete SSE events (terminated by \n\n)
+      while (true) {
+        const eventEnd = buffer.indexOf('\n\n');
+        if (eventEnd === -1) break;
+
+        const eventBlock = buffer.slice(0, eventEnd);
+        buffer = buffer.slice(eventEnd + 2);
+
+        for (const line of eventBlock.split('\n')) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              onEvent(data);
+            } catch (e) {
+              console.warn('[SSE] Parse error:', e);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Start a session via HTTP/SSE (used when WebSocket is unavailable)
+   */
+  async function startSessionHTTP() {
+    try {
+      if (activeSSEAbortController) activeSSEAbortController.abort();
+      activeSSEAbortController = new AbortController();
+
+      const response = await fetch('/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ language: currentLanguage }),
+        signal: activeSSEAbortController.signal,
+      });
+
+      await readSSEStream(response, (event) => {
+        if (event.type === 'done' && event.conversationHistory) {
+          httpConversationHistory = event.conversationHistory;
+          console.log('[App] HTTP session started, history:', httpConversationHistory.length, 'messages');
+        }
+        handleServerMessage(event);
+      });
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      console.error('[App] HTTP session start error:', err);
+    }
+  }
+
+  /**
+   * Send user speech via HTTP/SSE (used when WebSocket is unavailable)
+   */
+  async function sendChatHTTP(text) {
+    try {
+      if (activeSSEAbortController) activeSSEAbortController.abort();
+      activeSSEAbortController = new AbortController();
+
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          conversationHistory: httpConversationHistory,
+          language: currentLanguage,
+          location: currentLocation,
+        }),
+        signal: activeSSEAbortController.signal,
+      });
+
+      await readSSEStream(response, (event) => {
+        if (event.type === 'done' && event.conversationHistory) {
+          httpConversationHistory = event.conversationHistory;
+          console.log('[App] HTTP chat done, history:', httpConversationHistory.length, 'messages');
+        }
+        // Don't duplicate user transcript — chat API sends it, but we already added it client-side
+        if (event.type === 'transcript' && event.role === 'user') return;
+        handleServerMessage(event);
+      });
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      console.error('[App] HTTP chat error:', err);
+      updateState('listening');
+    }
+  }
+
   // ─── Start Session ────────────────────────────────────────────
 
   async function handleStart() {
@@ -897,9 +1011,11 @@
         try { await audioPlayer.audioContext.resume(); } catch (e) {}
       }
 
-      // 2. Connect WebSocket so TTS greeting and responses stream immediately
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
+      // 2. Connect transport (WebSocket or HTTP/SSE)
+      if (!useHttpTransport && (!ws || ws.readyState !== WebSocket.OPEN)) {
         connectWebSocket();
+      } else if (useHttpTransport) {
+        // HTTP mode: start session via SSE after mic setup
       }
 
       // 3. Request microphone access with echo cancellation
@@ -927,6 +1043,11 @@
       // 4. Set up speech recognition if mic is available
       if (stream) {
         setupSpeechRecognition();
+      }
+
+      // 4b. In HTTP/SSE mode, start session now (after mic setup)
+      if (useHttpTransport) {
+        startSessionHTTP();
       }
 
       // 5. Update start button and mic button state
@@ -1052,15 +1173,33 @@
     addTranscriptMessage('system', 'Microphone turned off. Consultation concluded. Click "Tap to Begin" anytime to restart.');
   }
 
-  // ─── WebSocket Connection ─────────────────────────────────────
+  // ─── WebSocket Connection (with HTTP/SSE fallback) ────────────
 
   function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}`;
 
-    ws = new WebSocket(url);
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      console.log('[App] WebSocket construction failed, switching to HTTP/SSE transport');
+      switchToHttpTransport();
+      return;
+    }
+
+    // If WebSocket doesn't open within 3 seconds, fall back to HTTP/SSE
+    const wsTimeout = setTimeout(() => {
+      if (ws && ws.readyState !== WebSocket.OPEN) {
+        console.log('[App] WebSocket timeout, switching to HTTP/SSE transport');
+        try { ws.close(); } catch (e) {}
+        ws = null;
+        switchToHttpTransport();
+      }
+    }, 3000);
 
     ws.onopen = () => {
+      clearTimeout(wsTimeout);
+      useHttpTransport = false;
       setConnectionStatus('connected', 'Connected');
       console.log('[App] WebSocket connected');
     };
@@ -1075,12 +1214,21 @@
     };
 
     ws.onclose = () => {
-      setConnectionStatus('error', 'Disconnected');
+      clearTimeout(wsTimeout);
       console.log('[App] WebSocket closed');
+
+      // If session never started successfully via WS, switch to HTTP
+      if (!isSessionStarted) {
+        console.log('[App] WebSocket closed before session, switching to HTTP/SSE');
+        switchToHttpTransport();
+        return;
+      }
+
+      setConnectionStatus('error', 'Disconnected');
 
       // Attempt reconnect after 3 seconds
       setTimeout(() => {
-        if (!ws || ws.readyState === WebSocket.CLOSED) {
+        if (!useHttpTransport && (!ws || ws.readyState === WebSocket.CLOSED)) {
           console.log('[App] Attempting reconnect...');
           connectWebSocket();
         }
@@ -1088,9 +1236,28 @@
     };
 
     ws.onerror = (err) => {
+      clearTimeout(wsTimeout);
       console.error('[App] WebSocket error:', err);
-      setConnectionStatus('error', 'Error');
+
+      // If WebSocket fails entirely, switch to HTTP/SSE (Vercel deployment)
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        switchToHttpTransport();
+      } else {
+        setConnectionStatus('error', 'Error');
+      }
     };
+  }
+
+  function switchToHttpTransport() {
+    useHttpTransport = true;
+    ws = null;
+    setConnectionStatus('connected', 'HTTP Connected');
+    console.log('[App] Using HTTP/SSE transport (serverless mode)');
+
+    // If session was being started, continue via HTTP
+    if (isSessionStarted) {
+      startSessionHTTP();
+    }
   }
 
   // ─── Handle Server Messages ───────────────────────────────────
@@ -1105,9 +1272,19 @@
         if (message.language && message.language !== currentLanguage) {
           setAppLanguage(message.language, false);
         }
-        sendMessage({ type: 'start_session' });
+        // In WebSocket mode, send start_session; in HTTP mode, session is already started
+        if (!useHttpTransport) {
+          sendMessage({ type: 'start_session' });
+        }
         if (!isMicMuted) {
           startRecognition();
+        }
+        break;
+
+      case 'done':
+        // HTTP/SSE transport: conversation complete, update history
+        if (message.conversationHistory) {
+          httpConversationHistory = message.conversationHistory;
         }
         break;
 
@@ -1401,6 +1578,10 @@
         if (metricInterrupt) {
           metricInterrupt.textContent = `${msg.clientHaltMs < 1 ? msg.clientHaltMs.toFixed(2) : Math.round(msg.clientHaltMs)} ms`;
         }
+        // In HTTP mode, abort the active SSE stream to stop server-side processing
+        if (useHttpTransport && activeSSEAbortController) {
+          activeSSEAbortController.abort();
+        }
         sendMessage(msg);
       },
       onSubmitSpeech: (finalTextToSubmit) => {
@@ -1423,14 +1604,20 @@
         const displayText = normalized.normalizedTranscript || finalTextToSubmit;
         addTranscriptMessage('user', displayText);
 
-        sendMessage({
-          type: 'user_speech',
-          text: displayText,
-          rawTranscript: finalTextToSubmit,
-          normalizedTranscript: displayText,
-          medicalTerms: normalized.detectedMedicalTerms || [],
-          isAmbiguous: normalized.isAmbiguous,
-        });
+        if (useHttpTransport) {
+          // HTTP/SSE mode: send via POST /api/chat
+          sendChatHTTP(displayText);
+        } else {
+          // WebSocket mode: send via WS
+          sendMessage({
+            type: 'user_speech',
+            text: displayText,
+            rawTranscript: finalTextToSubmit,
+            normalizedTranscript: displayText,
+            medicalTerms: normalized.detectedMedicalTerms || [],
+            isAmbiguous: normalized.isAmbiguous,
+          });
+        }
 
         const localSymptoms = extractClientSymptoms(displayText);
         if (localSymptoms.length > 0 && symptomTags) {
@@ -1689,6 +1876,19 @@
   // ─── WebSocket Send ───────────────────────────────────────────
 
   function sendMessage(message) {
+    if (useHttpTransport) {
+      // In HTTP mode, most messages are handled differently:
+      // - user_speech → sendChatHTTP (handled at call site)
+      // - set_language, set_location → stored client-side
+      // - interrupt_start → abort SSE (handled at call site)
+      // - playback_start/complete, get_metrics → skip (no persistent server)
+      if (message.type === 'set_language' && message.language) {
+        // Language is already tracked in currentLanguage
+      } else if (message.type === 'set_location' && message.location) {
+        // Location is already tracked in currentLocation
+      }
+      return;
+    }
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
     }
