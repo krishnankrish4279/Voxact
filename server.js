@@ -24,9 +24,11 @@ const PORT = process.env.PORT || 3000;
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
-// ─── Serverless API Endpoints (Chat & Session) ──────────────────────────────
+// ─── Serverless API Endpoints (Chat, Session, TTS) ──────────────────────────
 app.post('/api/chat', require('./api/chat'));
 app.post('/api/session', require('./api/session'));
+app.get('/api/tts', require('./api/tts'));
+app.post('/api/tts', require('./api/tts'));
 
 // ─── Health Check ───────────────────────────────────────────────────────────
 

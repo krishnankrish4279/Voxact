@@ -788,7 +788,7 @@ async function testMultilingualAndCareNavigationSuite() {
 
   // 3. Language switch updates speech recognition lang
   assert(
-    LANGUAGE_CONFIGS.en.recognitionLang === 'en-US' &&
+    (LANGUAGE_CONFIGS.en.recognitionLang === 'en-US' || LANGUAGE_CONFIGS.en.recognitionLang === 'en-IN') &&
     LANGUAGE_CONFIGS.ta.recognitionLang === 'ta-IN' &&
     LANGUAGE_CONFIGS.hi.recognitionLang === 'hi-IN',
     'Case 3: Language switch maps to exact Web Speech recognition tags (en-US, ta-IN, hi-IN)',

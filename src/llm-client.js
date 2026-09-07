@@ -6,6 +6,8 @@
 
 const OpenAI = require('openai');
 const { TOOL_DEFINITIONS } = require('./tools');
+const { extractClinicalSymptoms } = require('./medical-transcriber');
+const { TAMIL_CONDITION_NAMES, HINDI_CONDITION_NAMES } = require('./tts-synthesizer');
 
 const SYSTEM_PROMPT_EN = `You are VoxAct, a voice-based medical triage assistant. Your responses will be spoken aloud using text-to-speech, so write for the ear, not the eye.
 
@@ -287,11 +289,11 @@ class LLMClient {
       this.careDeclined = true;
       let responseText = '';
       if (lang === 'ta') {
-        responseText = "சரி, புரிந்து கொண்டேன். உங்கள் அறிகுறிகள் மாறினாலோ அல்லது வேறு ஏதேனும் உதவி தேவைப்பட்டாலோ தெரிவிக்கவும்.";
+        responseText = "சரி, புரிந்து கொண்டேன். நான் கிளினிக்குகளைத் தேட மாட்டேன். உங்கள் அறிகுறிகளைக் கவனிப்பதில் கவனம் செலுத்துவோம்.";
       } else if (lang === 'hi') {
-        responseText = "ठीक है, समझ गया। यदि लक्षणों में कोई बदलाव हो या अन्य सहायता चाहिए तो अवश्य बताएं।";
+        responseText = "ठीक है, समझ गया। मैं अस्पतालों की तलाश नहीं करूँगा। आइए आपके लक्षणों के प्रबंधन पर ध्यान दें।";
       } else {
-        responseText = "Understood. Please let me know if your symptoms change or if you need help with anything else.";
+        responseText = "Understood. I will not search for clinics. Let's focus on managing your symptoms. Please let me know if you need help with anything else.";
       }
 
       const sentences = responseText.match(/[^.!?।]+[.!?।]+/g) || [responseText];
@@ -596,26 +598,155 @@ class LLMClient {
       };
     }
 
-    // 2. Comprehensive clinical symptom pattern matching supporting English, Tamil, Hindi, and Code-switching
+    // 2. Medicine / Drug guidance request safety flow
+    const isMedicineRequest = /\b(medicine|medication|tablets?|pills?|drug|syrup|dosage|what can i take|take for)\b/i.test(lower) ||
+      lastUserMsg.includes('மருந்து') || lastUserMsg.includes('மாத்திரை') ||
+      lastUserMsg.includes('दवा') || lastUserMsg.includes('दवाई') || lastUserMsg.includes('गोली');
+
+    if (isMedicineRequest) {
+      let medResponse = '';
+      const isVomiting = lower.includes('vomit') || lastUserMsg.includes('வாந்தி') || lastUserMsg.includes('உல்டி') || lastUserMsg.includes('उल्टी');
+      const isHeadache = lower.includes('headache') || lower.includes('head') || lastUserMsg.includes('தலைவலி') || lastUserMsg.includes('தலவலி') || lastUserMsg.includes('सिरदर्द');
+      const isFever = lower.includes('fever') || lastUserMsg.includes('காய்ச்சல்') || lastUserMsg.includes('ஜுரம்') || lastUserMsg.includes('बुखार');
+
+      if (lang === 'ta') {
+        if (isVomiting) {
+          medResponse = "நான் குறிப்பிட்ட மருந்துகளையோ அளவுகளையோ பரிந்துரைக்க முடியாது, ஏனெனில் அவற்றை தகுதியுள்ள மருத்துவர் அல்லது மருந்தாளுநரே பரிந்துரைக்க வேண்டும். வாந்தியின் போது மிக முக்கியமானது, நீர்ச்சத்து இழப்பைத் தடுக்க சிறிது சிறிதாக தண்ணீர் அல்லது ஓ.ஆர்.எஸ் (ORS) கரைசல் குடிப்பதாகும். எண்ணெய் மற்றும் கடினமான உணவுகளைத் தவிர்க்கவும். வாந்தி நிற்காவிட்டாலோ அல்லது ரத்தம் இருந்தாலோ உடனே மருத்துவரை அணுகவும்.";
+        } else if (isHeadache) {
+          medResponse = "நான் குறிப்பிட்ட மருந்து பரிந்துரைகளை வழங்க முடியாது. தலைவலிக்கு அமைதியான இருட்டான அறையில் ஓய்வெடுத்து தேவையான அளவு தண்ணீர் குடிக்கவும். பாராசிட்டமால் போன்ற பொதுவான வலி நிவாரணிகளை மருந்தாளுநர் ஆலோசனையுடன் மட்டுமே உட்கொள்ள வேண்டும். வலி தீவிரமானால் மருத்துவரை அணுகவும்.";
+        } else {
+          medResponse = "நான் குறிப்பிட்ட மருந்துகளைப் பரிந்துரைக்க முடியாது, ஏனெனில் அது மருத்துவப் பரிசோதனைக்குப் பின்பே முடிவு செய்யப்பட வேண்டும். உங்கள் அறிகுறிகளைப் பொறுத்து ஓய்வு மற்றும் நீர்ச்சத்து எடுத்துக்கொள்ளுங்கள். தேவையான மருந்துகளுக்கு மருத்துவர் அல்லது மருந்தாளுநரிடம் ஆலோசனை பெறவும்.";
+        }
+      } else if (lang === 'hi') {
+        if (isVomiting) {
+          medResponse = "मैं विशिष्ट दवाइयां या खुराक निर्धारित नहीं कर सकता, क्योंकि यह किसी डॉक्टर या फार्मासिस्ट द्वारा ही तय की जानी चाहिए। उल्टी की स्थिति में सबसे महत्वपूर्ण है कि थोड़ा-थोड़ा पानी या ओआरएस पीकर शरीर में पानी की कमी न होने दें। जब तक पेट सामान्य न हो, हल्का भोजन लें। यदि उल्टी बंद न हो तो तुरंत डॉक्टर से संपर्क करें।";
+        } else if (isHeadache) {
+          medResponse = "मैं कोई विशिष्ट दवा निर्धारित नहीं कर सकता। सिरदर्द में शांत और अंधेरे कमरे में आराम करें तथा पर्याप्त पानी पिएं। पेरासिटामोल जैसी सामान्य दर्द निवारक दवा केवल फार्मासिस्ट या डॉक्टर की सलाह पर ही लें। यदि दर्द बढ़ जाए तो तुरंत चिकित्सा परामर्श लें।";
+        } else {
+          medResponse = "मैं विशिष्ट दवाइयों की सिफारिश नहीं कर सकता। किसी भी दवा के सेवन से पहले कृपया योग्य डॉक्टर या फार्मासिस्ट से परामर्श अवश्य लें। आराम करें और खूब पानी पिएं।";
+        }
+      } else {
+        if (isVomiting) {
+          medResponse = "I cannot prescribe specific medications or provide exact dosages, as medications must be safely guided by a licensed doctor or pharmacist. For vomiting, the most crucial step is preventing dehydration by taking small, frequent sips of water or oral rehydration salts (ORS). Avoid heavy or greasy foods until your stomach settles. If you cannot keep fluids down for over twenty-four hours or notice blood in your vomit, please seek medical attention immediately.";
+        } else if (isHeadache) {
+          medResponse = "I cannot prescribe medications or recommend specific dosages. For a headache, rest in a quiet, dark room, stay well hydrated, and apply a cool cloth to your forehead. Common over-the-counter pain relievers can be discussed with a pharmacist or doctor, but if the headache is sudden and severe, please seek medical evaluation.";
+        } else {
+          medResponse = "I cannot prescribe medications or specify drug dosages. It is always safest to consult a licensed doctor or pharmacist before taking any medication. In the meantime, focus on resting and staying well-hydrated.";
+        }
+      }
+
+      const sentences = medResponse.match(/[^.!?।]+[.!?।]+/g) || [medResponse];
+      let fullText = '';
+      for (const s of sentences) {
+        if (signal?.aborted) return { cancelled: true, text: fullText, toolCalls: [] };
+        await new Promise(r => setTimeout(r, 40));
+        fullText += s;
+        onTextChunk(s);
+      }
+      this.addAssistantMessage(fullText);
+      return {
+        cancelled: false,
+        text: fullText,
+        toolCalls: [],
+        firstTokenMs: 40,
+        totalMs: Date.now() - startTime,
+      };
+    }
+
+    // 2b. "Cannot see a doctor" supportive care flow
+    const isCannotSeeDoctor = /\b(can(?:not|'t)\s+(?:go|visit|see)\s+(?:a\s+)?doctor|unable to (?:go|visit|see)\s+(?:a\s+)?doctor|can't afford|no doctor|cannot visit|unable to visit)\b/i.test(lower) ||
+      lastUserMsg.includes('மருத்துவரிடம் போக முடியாது') || lastUserMsg.includes('டாக்டரிடம் செல்ல முடியாது') ||
+      (lastUserMsg.includes('முடியாது') && (lastUserMsg.includes('டாக்டர்') || lastUserMsg.includes('மருத்துவர்'))) ||
+      lastUserMsg.includes('डॉक्टर के पास नहीं जा सकता') || lastUserMsg.includes('अस्पताल नहीं जा सकता');
+
+    if (isCannotSeeDoctor) {
+      let doctorResponse = '';
+      let hasRedFlag = false;
+      const lastToolMsg = [...this.conversationHistory].reverse().find(m => m.role === 'tool');
+      if (lastToolMsg) {
+        try {
+          const data = JSON.parse(lastToolMsg.content);
+          if (data.redFlags && data.redFlags.length > 0) hasRedFlag = true;
+          if (data.possibleConditions?.some(c => c.urgency === 'high' || c.urgency === 'emergency')) hasRedFlag = true;
+        } catch (e) {}
+      }
+      const userText = this.conversationHistory.filter(m => m.role === 'user').map(m => m.content || '').join(' ').toLowerCase();
+      if (/chest pain|tightness in chest|pressure in chest|நெஞ்சு\s*வலி|மார்பு\s*வலி|सीने\s*में\s*दर्द|shortness of breath|trouble breathing|hard to breathe|can't breathe|cannot breathe|மூச்சுத்திணறல்|सांस\s*लेने\s*में\s*तकलीफ|loss of consciousness|passed out|fainted|blackout|vomiting blood|coughing blood|severe bleeding|radiating/i.test(userText)) {
+        hasRedFlag = true;
+      }
+
+      if (lang === 'ta') {
+        if (hasRedFlag) {
+          doctorResponse = "மருத்துவரிடம் செல்வது தற்போது சிரமமாக இருக்கலாம் என்பதை நான் முழுமையாகப் புரிந்து கொள்கிறேன். இருப்பினும், உங்கள் அறிகுறிகள் தீவிரமானதாக இருக்கக்கூடும் என்பதால் உடனடி மருத்துவப் பரிசோதனை மிக அவசியமாகும். தயவுசெய்து தாமதிக்காமல் அவசர உதவி எண் 108 அல்லது 112-ஐ அழைக்கவும் அல்லது உடனடி உதவி பெறவும்.";
+        } else {
+          doctorResponse = "தற்போது மருத்துவரிடம் செல்ல முடியாத சூழலை புரிந்து கொள்கிறேன். வீட்டில் இருக்கும்போது, பாதிக்கப்பட்ட பகுதிக்கு சிரமம் கொடுக்காமல் முழுமையாக ஓய்வெடுங்கள். வலி உள்ள இடத்தில் ஐஸ் ஒத்தடம் கொடுக்கலாம். ஆனால் வீக்கம் அதிகரித்தாலோ, கடுமையான வலி ஏற்பட்டாலோ அல்லது காய்ச்சல் வந்தாலோ கட்டாயமாக அவசர மருத்துவ உதவியை நாட வேண்டும்.";
+        }
+      } else if (lang === 'hi') {
+        if (hasRedFlag) {
+          doctorResponse = "मैं समझता हूँ कि अभी डॉक्टर के पास जाना मुश्किल हो सकता है। लेकिन आपके लक्षण गंभीर हो सकते हैं, इसलिए पेशेवर चिकित्सीय जांच अत्यंत आवश्यक है। कृपया किसी भी देरी के बिना आपातकालीन नंबर 112 या 108 पर संपर्क करें।";
+        } else {
+          doctorResponse = "मैं समझता हूँ कि इस समय डॉक्टर के पास जाना संभव नहीं है। घर पर देखभाल के लिए पर्याप्त आराम करें और प्रभावित हिस्से पर दबाव न डालें। यदि सूजन हो तो ठंडी सिकाई करें। लेकिन यदि दर्द अचानक बढ़ जाए या बुखार आए, तो तुरंत आपातकालीन सहायता लें।";
+        }
+      } else {
+        if (hasRedFlag) {
+          doctorResponse = "I understand that visiting a doctor is difficult right now. However, because your reported symptoms could indicate a serious or life-threatening condition, a professional medical evaluation is truly essential. Please do not wait — call emergency services at 108 or 911 immediately, or ask someone to help you reach emergency care.";
+        } else {
+          doctorResponse = "I understand that you cannot visit a doctor right now. For supportive home care, get plenty of rest and avoid putting weight or strain on the painful area. You can apply cold packs for fifteen minutes at a time and keep the limb elevated. Watch closely for warning signs: if you develop severe swelling, spreading redness, a fever, or an inability to move, you should seek emergency medical care immediately.";
+        }
+      }
+
+      const sentences = doctorResponse.match(/[^.!?।]+[.!?।]+/g) || [doctorResponse];
+      let fullText = '';
+      for (const s of sentences) {
+        if (signal?.aborted) return { cancelled: true, text: fullText, toolCalls: [] };
+        await new Promise(r => setTimeout(r, 40));
+        fullText += s;
+        onTextChunk(s);
+      }
+      this.addAssistantMessage(fullText);
+      return {
+        cancelled: false,
+        text: fullText,
+        toolCalls: [],
+        firstTokenMs: 40,
+        totalMs: Date.now() - startTime,
+      };
+    }
+
+    // 2c. Comprehensive clinical symptom pattern matching supporting English, Tamil, Hindi, and Code-switching
     const SYMPTOM_PATTERNS = [
       { canonical: 'headache', triggers: ['headache', 'head hurts', 'head ache', 'migraine', 'throbbing head', 'pain in my head', 'தலைவலி', 'தலவலி', 'தல வலி', 'सिरदर्द', 'सिर दर्द', 'सरदर्द', 'सर में दर्द'] },
       { canonical: 'dizziness', triggers: ['dizzy', 'dizziness', 'lightheaded', 'light headed', 'vertigo', 'room spinning', 'unsteady', 'மயக்கம்', 'தலைசுற்றல்', 'चक्कर', 'चक्कर आना'] },
-      { canonical: 'nausea', triggers: ['nausea', 'nauseous', 'sick to my stomach', 'sick to stomach', 'queasy', 'vomit', 'vomiting', 'throwing up', 'puking', 'வாந்தி', 'குமட்டல்', 'उल्टी', 'जी मिचलाना'] },
+      { canonical: 'nausea', triggers: ['nausea', 'nauseous', 'sick to my stomach', 'sick to stomach', 'queasy', 'குமட்டல்', 'जी मिचलाना'] },
       { canonical: 'fever', triggers: ['fever', 'feverish', 'high temperature', 'temperature', 'chills', 'shivering', 'burning up', 'sweats', 'sweating', 'காய்ச்சல்', 'சூடு', 'बुखार', 'तापमान', 'तेज बुखार'] },
       { canonical: 'chest pain', triggers: ['chest pain', 'chest hurts', 'chest tightness', 'chest pressure', 'angina', 'tightness in chest', 'heart hurts', 'நெஞ்சு வலி', 'மார்பு வலி', 'सीने में दर्द', 'छाती में दर्द'] },
       { canonical: 'shortness of breath', triggers: ['shortness of breath', 'breathless', 'trouble breathing', 'hard to breathe', 'wheezing', 'can\'t breathe', 'gasping', 'மூச்சு திணறல்', 'மூச்சுக்குழல்', 'சாப்பாடு', 'सांस लेने में तकलीफ', 'सांस फूलना'] },
       { canonical: 'stomach pain', triggers: ['stomach pain', 'stomach ache', 'stomach hurts', 'belly ache', 'abdominal pain', 'cramps', 'cramping', 'gut hurts', 'tummy ache', 'வயிற்று வலி', 'வயிறு வலி', 'पेट दर्द', 'पेट में दर्द'] },
-      { canonical: 'fatigue', triggers: ['fatigue', 'fatigued', 'exhausted', 'exhaustion', 'tired', 'tiredness', 'no energy', 'weakness', 'weak', 'drained', 'சோர்வு', 'களைப்பு', 'थकान', 'कमजोरी', 'थकावट'] },
+      { canonical: 'fatigue', triggers: ['fatigue', 'fatigued', 'exhausted', 'exhaustion', 'tired', 'tiredness', 'no energy', 'drained', 'சோர்வு', 'களைப்பு', 'थकान', 'थकावट'] },
       { canonical: 'sore throat', triggers: ['sore throat', 'throat hurts', 'scratchy throat', 'hard to swallow', 'swollen glands', 'தொண்டை வலி', 'கரகரப்பு', 'गले में खराश', 'गले में दर्द'] },
       { canonical: 'cough', triggers: ['cough', 'coughing', 'hack', 'hacking', 'dry cough', 'phlegm', 'இருமல்', 'சளி', 'खांसी', 'कफ'] },
       { canonical: 'back pain', triggers: ['back pain', 'back hurts', 'lower back pain', 'backache', 'spine hurts', 'முதுகு வலி', 'पीठ दर्द', 'कमर दर्द'] },
-      { canonical: 'rash', triggers: ['rash', 'hives', 'itching', 'itchy skin', 'bumps', 'red spots', 'skin irritation', 'அரிப்பு', 'தடிப்பு', 'खुजली', 'चकत्ते'] }
+      { canonical: 'rash', triggers: ['rash', 'hives', 'itching', 'itchy skin', 'bumps', 'red spots', 'skin irritation', 'அரிப்பு', 'தடிப்பு', 'खुजली', 'चकत्ते'] },
+      { canonical: 'knee pain', triggers: ['knee pain', 'knees hurt', 'knee hurts', 'pain in my knees', 'pain in my knee', 'hurts when i walk', 'hurt when i walk', 'knee ache', 'sore knees', 'swollen knees', 'knees', 'knee', 'முழங்கால் வலி', 'முழங்கால்', 'முழங்கால்ல வலி', 'முட்டி வலி', 'முட்டில வலி', 'முட்டில பெயின்', 'முட்டில pain', 'கால் வலி', 'muzhang kaal vali', 'mutti vali', 'muttile pain', 'knee la romba pain', 'घुटने में दर्द', 'घुटने का दर्द', 'घुटनों में दर्द'] },
+      { canonical: 'vomiting', triggers: ['vomit', 'vomiting', 'threw up', 'throwing up', 'puking', 'வாந்தி', 'வாந்தி வருது', 'வாந்தி இருக்கு', 'enaku vomit aagudhu', 'vomit aagudhu', 'उल्टी', 'उल्टी होना'] },
+      { canonical: 'weakness', triggers: ['weakness', 'weak', 'very weak', 'so weak', 'loss of strength', 'பலவீனம்', 'உடம்பு பலவீனம்', 'முடியல', 'உடம்பு ரொம்ப முடியல', 'weak-aa இருக்கு', 'weak aa irukku', 'udambu romba weak aa irukku', 'udambu romba mudiyala', 'कमजोरी', 'अशक्तता'] },
     ];
 
     const currentTurnDetected = [];
     for (const item of SYMPTOM_PATTERNS) {
       if (item.triggers.some(t => lower.includes(t.toLowerCase()))) {
         currentTurnDetected.push(item.canonical);
+      }
+    }
+
+    // Deterministic clinical symptom extraction from medical-transcriber
+    const clinicalExtraction = extractClinicalSymptoms(lastUserMsg, lang);
+    if (clinicalExtraction && clinicalExtraction.symptoms) {
+      for (const s of clinicalExtraction.symptoms) {
+        const canonical = s.toLowerCase();
+        if (!currentTurnDetected.includes(canonical)) {
+          currentTurnDetected.push(canonical);
+        }
       }
     }
 
@@ -636,6 +767,17 @@ class LLMClient {
 
     // 3. If any symptoms are found, dispatch analyzeSymptoms tool
     if (detected.length > 0) {
+      // Check if user explicitly asked for care facilities in this turn (Combined Request)
+      const isExplicitCare = /\b(hospital|clinic|urgent care|emergency|doctor|care)\b/i.test(lower) ||
+        lastUserMsg.includes('மருத்துவமனை') || lastUserMsg.includes('கிளினிக்') || lastUserMsg.includes('அவசர') ||
+        lastUserMsg.includes('அஸ்பத்தால்') || lastUserMsg.includes('अस्पताल') || lastUserMsg.includes('क्लिनिक');
+
+      if (isExplicitCare && !this.careDeclined && this.nearbyCareStatus !== 'declined') {
+        this.hasExplicitCareRequest = true;
+        this.nearbyCareStatus = 'accepted';
+        this.pendingAction = null;
+      }
+
       const toolCallId = 'call_sim_' + Math.random().toString(36).substring(2, 9);
       const toolCalls = [{
         id: toolCallId,
@@ -705,20 +847,20 @@ class LLMClient {
 
     if (lang === 'ta') {
       if (/\b(வணக்கம்|ஹலோ|hello|hi)\b/i.test(lower)) {
-        responseText = "வணக்கம்! நான் VoxAct, உங்கள் மருத்துவ உதவியாளர். உங்களுக்கு என்ன பிரச்சனை? உங்கள் உடல்நிலை இப்போது எப்படி இருக்கிறது?";
+        responseText = "வணக்கம்! நான் வாக்ஸ் ஆக்ட், உங்கள் மருத்துவ உதவியாளர். உங்களுக்கு என்ன தொந்தரவு? உங்கள் உடல்நிலை இப்போது எப்படி இருக்கிறது?";
       } else if (/\b(நன்றி|thanks)\b/i.test(lower)) {
         responseText = "மகிழ்ச்சி. வேறு ஏதேனும் அறிகுறிகள் உள்ளதா என்பதைத் தெரிவிக்கவும்.";
       } else {
         const dynamicInquiriesTa = [
           "நான் கவனமாகக் கேட்கிறேன். உங்கள் உடலில் என்ன மாற்றங்களை அல்லது அசௌகரியத்தை உணர்கிறீர்கள்?",
           "உங்களுக்கு தலைவலி, காய்ச்சல், அல்லது வேறு ஏதேனும் உடல் வலி உள்ளதா?",
-          "நீங்கள் உணரும் முக்கிய பிரச்சனையை விளக்கினால், நான் சரியான வழிகாட்டலை வழங்க முடியும்.",
+          "நீங்கள் உணரும் முக்கிய தொந்தரவை விளக்கினால், நான் சரியான வழிகாட்டலை வழங்க முடியும்.",
         ];
         responseText = dynamicInquiriesTa[userTurnCount % dynamicInquiriesTa.length];
       }
     } else if (lang === 'hi') {
       if (/\b(नमस्ते|नमस्कार|हेलो|hello|hi)\b/i.test(lower)) {
-        responseText = "नमस्ते! मैं VoxAct हूँ, आपका मेडिकल ट्रायज सहायक। आप इस समय कैसा महसूस कर रहे हैं और आपको क्या समस्या है?";
+        responseText = "नमस्ते! मैं वॉक्सएक्ट (VoxAct) हूँ, आपका मेडिकल ट्रायज सहायक। आप इस समय कैसा महसूस कर रहे हैं और आपको क्या समस्या है?";
       } else if (/\b(धन्यवाद|शुक्रिया|thanks)\b/i.test(lower)) {
         responseText = "आपका स्वागत है। यदि आपको कोई अन्य लक्षण महसूस हो रहे हैं तो मुझे अवश्य बताएं।";
       } else {
@@ -744,9 +886,9 @@ class LLMClient {
       } else {
         const dynamicInquiries = [
           "I'm listening closely. Could you describe what main symptoms or changes in your body you've noticed?",
-          "To help evaluate what might be going on, are you having a headache, nausea, fever, or any pain?",
-          "I want to make sure we assess this thoroughly. Could you share what discomfort is troubling you most?",
-          "I'm here to assist you. Are you feeling dizzy, sick to your stomach, or running a temperature?",
+          "To help evaluate what might be going on, could you share a bit more detail about when your symptoms started?",
+          "I want to make sure we assess this thoroughly. Could you tell me what physical discomfort is troubling you most?",
+          "I'm here to assist you. Could you describe what you are experiencing right now?",
         ];
         responseText = dynamicInquiries[userTurnCount % dynamicInquiries.length];
       }
@@ -807,50 +949,69 @@ class LLMClient {
       const top = toolData.possibleConditions[0];
       const second = toolData.possibleConditions[1];
       const hasEmergency = toolData.possibleConditions.some(c => c.urgency === 'high' || c.urgency === 'emergency');
+      const isKnee = toolData.symptoms?.some(s => s.toLowerCase().includes('knee'));
+      const isVomit = toolData.symptoms?.some(s => s.toLowerCase().includes('vomit'));
 
-      const offerCare = !this.careDeclined && this.nearbyCareStatus !== 'declined';
+      const isExplicitCare = Boolean(this.hasExplicitCareRequest);
+      this.hasExplicitCareRequest = false;
+
+      // STRICT RULE: Only offer care navigation when urgent/emergency care is clinically required, never for low/medium symptoms!
+      const offerCare = !this.careDeclined && this.nearbyCareStatus !== 'declined' && hasEmergency && !isExplicitCare;
+
       if (lang === 'ta') {
-        if (hasEmergency) {
+        const condTa = TAMIL_CONDITION_NAMES[top.condition] || top.condition;
+        if (isExplicitCare) {
+          responseText = `உங்கள் அறிகுறிகளை ஆராய்ந்ததில், இது ${condTa} நிலையுடன் ஒத்துப்போகிறது. உங்களுக்கு அருகில் உள்ள மருத்துவமனைகளை வரைபடத்தில் தயார் செய்துள்ளேன். தயவுசெய்து அவற்றை மதிப்பாய்வு செய்து பரிசோதனை செய்து கொள்ளவும்.`;
+        } else if (hasEmergency) {
           responseText = offerCare
-            ? `உங்கள் அறிகுறிகளைப் பார்க்கும்போது, இது ${top.condition} ஆக இருக்க வாய்ப்புள்ளது. இது அவசர கவனிப்பு தேவைப்படலாம் என்பதால், உடனடியாக அவசர சிகிச்சை மையத்தை அணுகுமாறு பரிந்துரைக்கிறேன். உங்களுக்கு அருகில் உள்ள அவசர மருத்துவமனையை வரைபடத்தில் காட்டவா?`
-            : `உங்கள் அறிகுறிகளைப் பார்க்கும்போது, இது ${top.condition} ஆக இருக்க வாய்ப்புள்ளது. இது அவசர கவனிப்பு தேவைப்படலாம் என்பதால், உடனடியாக அவசர சிகிச்சை மையத்தை அணுகுமாறு பரிந்துரைக்கிறேன். தேவைப்பட்டால் அவசர உதவி எண் 108-ஐ அழைக்கவும்.`;
+            ? `உங்கள் அறிகுறிகளைப் பார்க்கும்போது, இது ${condTa} ஆக இருக்க வாய்ப்புள்ளது. இது அவசர கவனிப்பு தேவைப்படலாம் என்பதால், உடனடியாக அவசர சிகிச்சை மையத்தை அணுகுமாறு பரிந்துரைக்கிறேன். உங்களுக்கு அருகில் உள்ள அவசர மருத்துவமனையை வரைபடத்தில் காட்டவா?`
+            : `உங்கள் அறிகுறிகளைப் பார்க்கும்போது, இது ${condTa} ஆக இருக்க வாய்ப்புள்ளது. இது அவசர கவனிப்பு தேவைப்படலாம் என்பதால், உடனடியாக அவசர சிகிச்சை மையத்தை அணுகுமாறு பரிந்துரைக்கிறேன். தேவைப்பட்டால் அவசர உதவி எண் 108-ஐ அழைக்கவும்.`;
+        } else if (isKnee) {
+          responseText = `உங்கள் அறிகுறிகளை ஆராய்ந்ததில், இது ${condTa} நிலையுடன் ஒத்துப்போகிறது. முழங்காலில் வீக்கம் உள்ளதா, உங்களால் சாதாரணமாக நடக்க முடிகிறதா என்பதைத் தெரிந்து கொள்ள விரும்புகிறேன். மூட்டுக்கு அதிக சிரமம் கொடுக்காமல் ஓய்வெடுங்கள்.`;
+        } else if (isVomit) {
+          responseText = `உங்கள் அறிகுறிகளை ஆராய்ந்ததில், இது ${condTa} நிலையுடன் ஒத்துப்போகிறது. நீரிழப்பைத் தவிர்க்க அவ்வப்போது சிறிது சிறிதாக தண்ணீர் அருந்துங்கள். காய்ச்சல் அல்லது கடுமையான வயிற்று வலி உள்ளதா?`;
         } else {
-          responseText = offerCare
-            ? `உங்கள் அறிகுறிகளை ஆராய்ந்ததில், இது ${top.condition} நிலையுடன் ஒத்துப்போகிறது. போதுமான ஓய்வெடுத்து நீர் அருந்துங்கள். அறிகுறிகள் தொடர்ந்தால் மருத்துவரை அணுகவும். உங்களுக்கு அருகில் உள்ள கிளினிக்குகளைப் பார்க்கவா?`
-            : `உங்கள் அறிகுறிகளை ஆராய்ந்ததில், இது ${top.condition} நிலையுடன் ஒத்துப்போகிறது. போதுமான ஓய்வெடுத்து நீர் அருந்துங்கள். அறிகுறிகள் மாறினால் தயங்காமல் தெரிவிக்கவும்.`;
+          responseText = `உங்கள் அறிகுறிகளை ஆராய்ந்ததில், இது ${condTa} நிலையுடன் ஒத்துப்போகிறது. போதுமான ஓய்வெடுத்து நீர் அருந்துங்கள். அறிகுறிகள் தொடர்ந்தால் மருத்துவரை அணுகவும்.`;
         }
       } else if (lang === 'hi') {
-        if (hasEmergency) {
+        const condHi = HINDI_CONDITION_NAMES[top.condition] || top.condition;
+        if (isExplicitCare) {
+          responseText = `आपके लक्षणों के अनुसार, यह ${condHi} की ओर संकेत करता है। मैंने आपके पास के चिकित्सा केंद्रों को मानचित्र पर दिखा दिया है। कृपया विवरण देखें और आवश्यकतानुसार परामर्श लें।`;
+        } else if (hasEmergency) {
           responseText = offerCare
-            ? `आपके लक्षणों के आधार पर, यह ${top.condition} का संकेत हो सकता है। यह गंभीर स्थिति हो सकती है, इसलिए तुरंत आपातकालीन चिकित्सा सहायता लेने की सलाह दी जाती है। क्या मैं आपके नजदीकी अस्पताल की जानकारी दिखाऊँ?`
-            : `आपके लक्षणों के आधार पर, यह ${top.condition} का संकेत हो सकता है। यह गंभीर स्थिति हो सकती है, इसलिए तुरंत आपातकालीन चिकित्सा सहायता लेने की सलाह दी जाती है।`;
+            ? `आपके लक्षणों के आधार पर, यह ${condHi} का संकेत हो सकता है। यह गंभीर स्थिति हो सकती है, इसलिए तुरंत आपातकालीन चिकित्सा सहायता लेने की सलाह दी जाती है। क्या मैं आपके नजदीकी अस्पताल की जानकारी दिखाऊँ?`
+            : `आपके लक्षणों के आधार पर, यह ${condHi} का संकेत हो सकता है। यह गंभीर स्थिति हो सकती है, इसलिए तुरंत आपातकालीन चिकित्सा सहायता लेने की सलाह दी जाती है।`;
+        } else if (isKnee) {
+          responseText = `आपके लक्षणों के अनुसार, यह ${condHi} की ओर संकेत करता है। क्या घुटने में सूजन है, और क्या आप सामान्य रूप से चल पा रहे हैं? इस समय जोड़ पर अधिक दबाव न डालें और आराम करें।`;
+        } else if (isVomit) {
+          responseText = `आपके लक्षणों के अनुसार, यह ${condHi} का संकेत हो सकता है। कृपया निर्जलीकरण से बचने के लिए थोड़ा-थोड़ा पानी या ओआरएस पिएं। यदि सुधार न हो तो डॉक्टर से परामर्श लें।`;
         } else {
-          responseText = offerCare
-            ? `आपके लक्षणों के अनुसार, यह ${top.condition} की ओर संकेत करता है। कृपया पर्याप्त आराम करें और पानी पिएं। यदि सुधार न हो तो डॉक्टर से परामर्श लें। क्या मैं पास के क्लिनिक की तलाश करूँ?`
-            : `आपके लक्षणों के अनुसार, यह ${top.condition} की ओर संकेत करता है। कृपया पर्याप्त आराम करें और पानी पिएं। यदि सुधार न हो तो मुझे अवश्य बताएं।`;
+          responseText = `आपके लक्षणों के अनुसार, यह ${condHi} की ओर संकेत करता है। कृपया पर्याप्त आराम करें और पानी पिएं। यदि सुधार न हो तो मुझे अवश्य बताएं।`;
         }
       } else {
-        if (hasEmergency) {
+        if (isExplicitCare) {
+          responseText = `Based on what you've described, this looks consistent with ${top.condition}. I have identified recommended nearby healthcare facilities on the care map for you. Please review them and seek medical evaluation if your symptoms persist or worsen.`;
+        } else if (hasEmergency) {
           responseText = offerCare
             ? `Based on what you've described, this could potentially indicate ${top.condition}. Because these symptoms can be serious, I strongly recommend seeking medical evaluation right away or going to an urgent care clinic. Would you like me to find the nearest emergency-capable clinic for you?`
             : `Based on what you've described, this could potentially indicate ${top.condition}. Because these symptoms can be serious, I strongly recommend seeking medical evaluation right away or going to an urgent care clinic.`;
+        } else if (isKnee) {
+          responseText = `Based on your symptoms, the triage analysis points towards ${top.condition}. To better evaluate this, could you let me know if you notice any swelling, whether one or both knees hurt, and if you are able to walk normally? For now, rest the joint and avoid putting excess weight on it.`;
+        } else if (isVomit) {
+          responseText = `Based on your symptoms, the triage analysis points towards ${top.condition}. It is important to stay hydrated with small sips of water or electrolyte solution. Are you able to keep any fluids down, and do you also have a fever?`;
         } else if (second) {
-          responseText = offerCare
-            ? `Based on your symptoms, the triage analysis points towards ${top.condition}, or possibly ${second.condition}. In the meantime, rest and stay well-hydrated. If your symptoms don't improve or start getting worse, I'd recommend having a healthcare provider take a look. Would you like me to check available clinics nearby?`
-            : `Based on your symptoms, the triage analysis points towards ${top.condition}, or possibly ${second.condition}. In the meantime, rest and stay well-hydrated. If your symptoms don't improve or start getting worse, I'd recommend having a healthcare provider take a look.`;
+          responseText = `Based on your symptoms, the triage analysis points towards ${top.condition}, or possibly ${second.condition}. In the meantime, rest and stay well-hydrated. If your symptoms don't improve or start getting worse, I'd recommend having a healthcare provider take a look.`;
         } else {
-          responseText = offerCare
-            ? `Based on what you've shared, this looks consistent with ${top.condition}. I suggest resting and drinking plenty of fluids. If things don't improve over the next day or two, please consult with a doctor. Would you like me to look up local clinic options?`
-            : `Based on what you've shared, this looks consistent with ${top.condition}. I suggest resting and drinking plenty of fluids. If things don't improve over the next day or two, please consult with a doctor.`;
+          responseText = `Based on what you've shared, this looks consistent with ${top.condition}. I suggest resting and drinking plenty of fluids. If things don't improve over the next day or two, please consult with a doctor.`;
         }
       }
     } else {
       if (lang === 'ta') {
-        responseText = "ஓய்வெடுத்து தேவையான அளவு தண்ணீர் குடிப்பது நல்லது. அறிகுறிகள் அதிகமானால் மருத்துவரை அணுகவும். அருகில் உள்ள கிளினிக்கைத் தேட உதவட்டுமா?";
+        responseText = "ஓய்வெடுத்து தேவையான அளவு தண்ணீர் குடிப்பது நல்லது. அறிகுறிகள் அதிகமானால் மருத்துவரை அணுகவும்.";
       } else if (lang === 'hi') {
-        responseText = "इस समय आराम करना और पर्याप्त पानी पीना उचित रहेगा। यदि लक्षण बढ़ें तो कृपया चिकित्सा पेशेवर से संपर्क करें। क्या मैं नजदीकी क्लिनिक खोजने में मदद करूँ?";
+        responseText = "इस समय आराम करना और पर्याप्त पानी पीना उचित रहेगा। यदि लक्षण बढ़ें तो कृपया चिकित्सा पेशेवर से संपर्क करें।";
       } else {
-        responseText = "Based on your description, it's a good idea to rest and stay well hydrated. If your symptoms persist or worsen, please consult a medical professional. Can I help you find a clinic in your area?";
+        responseText = "Based on your description, it's a good idea to rest and stay well hydrated. If your symptoms persist or worsen, please consult a medical professional.";
       }
     }
 

@@ -149,6 +149,19 @@ const VERIFIED_FACILITIES = [
     capabilities: ['emergency', 'high', 'medium', 'low'],
     region: 'Chennai'
   },
+  {
+    id: 'fac_chn_03',
+    name: 'Virutcham Hospital',
+    careType: 'Emergency & Multi-Specialty Hospital',
+    category: 'emergency',
+    address: 'Ayappakkam Main Rd, TNHB Colony, Ambattur, Chennai, Tamil Nadu 600077',
+    lat: 13.1090,
+    lon: 80.1440,
+    phone: '+91 44 2625 3333',
+    emergencyCapable: true,
+    capabilities: ['emergency', 'high', 'medium', 'low'],
+    region: 'Chennai'
+  },
 
   // Delhi (Hindi Region)
   {
@@ -304,15 +317,20 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
   let liveSearchSucceeded = false;
 
   // Progressive radius live Nominatim search around user's actual device coordinates
-  // Start with local 5 km radius (~0.045 deg). If 0 results, expand to 10 km (~0.090 deg).
+  // Adaptive radii: 3 km (~0.027 deg) -> 5 km (~0.045 deg) -> 10 km (~0.090 deg) -> 15 km (~0.135 deg)
   const searchRadii = [
+    { radiusKm: 3, delta: 0.027 },
     { radiusKm: 5, delta: 0.045 },
-    { radiusKm: 10, delta: 0.090 }
+    { radiusKm: 10, delta: 0.090 },
+    { radiusKm: 15, delta: 0.135 }
   ];
 
-  const queryTerm = targetCategory === 'emergency'
-    ? 'hospital'
-    : (targetCategory === 'urgent_care' ? 'urgent care' : 'clinic');
+  const facilityName = options.facilityName || options.facility_name || options.query || null;
+  const queryTerm = facilityName
+    ? facilityName
+    : (targetCategory === 'emergency'
+        ? 'hospital'
+        : (targetCategory === 'urgent_care' ? 'urgent care' : 'clinic'));
 
   for (const { radiusKm, delta } of searchRadii) {
     if (rawFacilities.length > 0 || signal?.aborted) break;
@@ -375,7 +393,14 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
     : (!liveSearchSucceeded && options.allowFallback !== false);
 
   if (rawFacilities.length === 0 && allowFallback) {
-    rawFacilities = VERIFIED_FACILITIES
+    let candidates = VERIFIED_FACILITIES;
+    if (facilityName) {
+      const matched = VERIFIED_FACILITIES.filter(f => f.name.toLowerCase().includes(facilityName.toLowerCase()));
+      if (matched.length > 0) {
+        candidates = matched;
+      }
+    }
+    rawFacilities = candidates
       .map(fac => {
         const dist = calculateDistanceMiles(userLat, userLon, fac.lat, fac.lon);
         return {

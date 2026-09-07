@@ -107,7 +107,7 @@
   const LANGUAGE_CONFIGS = {
     en: {
       rimeBadge: 'Rime Mist v3 (cove)',
-      recognitionLang: 'en-US',
+      recognitionLang: 'en-IN',
       interruptText: 'Wait',
       interruptBtnLabel: '🛑 Say "Wait"',
       emergencyNumber: '911 / 112'
@@ -270,6 +270,186 @@
       });
     }
     console.log(`[App] Language active: ${langCode} (${config.rimeBadge})`);
+  }
+
+  // ─── Multilingual Speech Synthesis & Native Voice Engine ───────
+  let cachedSpeechVoices = [];
+  function loadAvailableSpeechVoices() {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      const v = window.speechSynthesis.getVoices();
+      if (v && v.length > 0) {
+        cachedSpeechVoices = v;
+      }
+    }
+  }
+  if (typeof window !== 'undefined' && window.speechSynthesis) {
+    loadAvailableSpeechVoices();
+    window.speechSynthesis.onvoiceschanged = loadAvailableSpeechVoices;
+  }
+
+  function getBestVoiceForLanguage(langCode) {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return null;
+    loadAvailableSpeechVoices();
+    const voices = cachedSpeechVoices;
+    if (!voices || voices.length === 0) return null;
+
+    if (langCode === 'ta') {
+      // Priority 1: Natural / Online neural Tamil voices (Edge / Chrome)
+      const naturalTa = voices.find(v => (v.lang === 'ta-IN' || v.lang === 'ta' || v.lang.startsWith('ta')) && /natural|neural|online|google/i.test(v.name));
+      if (naturalTa) return naturalTa;
+      // Priority 2: Any Tamil voice
+      const anyTa = voices.find(v => v.lang === 'ta-IN' || v.lang === 'ta' || v.lang.startsWith('ta') || /tamil/i.test(v.name));
+      if (anyTa) return anyTa;
+    } else if (langCode === 'hi') {
+      const naturalHi = voices.find(v => (v.lang === 'hi-IN' || v.lang === 'hi') && /natural|neural|online|google/i.test(v.name));
+      if (naturalHi) return naturalHi;
+      const anyHi = voices.find(v => v.lang === 'hi-IN' || v.lang === 'hi' || v.lang.startsWith('hi') || /hindi/i.test(v.name));
+      if (anyHi) return anyHi;
+    } else {
+      const naturalEn = voices.find(v => (v.lang === 'en-IN' || v.lang === 'en-US' || v.lang.startsWith('en')) && /natural|neural|online|google/i.test(v.name));
+      if (naturalEn) return naturalEn;
+      const anyEn = voices.find(v => v.lang.startsWith('en'));
+      if (anyEn) return anyEn;
+    }
+    return null;
+  }
+
+  function tamilToPhoneticTanglishClient(text) {
+    if (!text || typeof text !== 'string') return '';
+    const vowels = {
+      '\u0B85': 'a', '\u0B86': 'aa', '\u0B87': 'i', '\u0B88': 'ee', '\u0B89': 'u',
+      '\u0B8A': 'oo', '\u0B8E': 'e', '\u0B8F': 'ae', '\u0B90': 'ai', '\u0B92': 'o',
+      '\u0B93': 'oa', '\u0B94': 'au'
+    };
+    const consonants = {
+      '\u0B95': 'k', '\u0B99': 'ng', '\u0B9A': 'ch', '\u0B9E': 'nj', '\u0B9F': 't',
+      '\u0BA3': 'n', '\u0BA4': 'th', '\u0BA8': 'n', '\u0BAA': 'p', '\u0BAE': 'm',
+      '\u0BAF': 'y', '\u0BB0': 'r', '\u0BB2': 'l', '\u0BB5': 'v', '\u0BB4': 'zh',
+      '\u0BB3': 'l', '\u0BB1': 'r', '\u0BA9': 'n',
+      '\u0B9C': 'j', '\u0BB7': 'sh', '\u0BB8': 's', '\u0BB9': 'h'
+    };
+    const signs = {
+      '\u0BBE': 'aa', '\u0BBF': 'i', '\u0BC0': 'ee', '\u0BC1': 'u', '\u0BC2': 'oo',
+      '\u0BC6': 'e', '\u0BC7': 'ae', '\u0BC8': 'ai', '\u0BCA': 'o', '\u0BCB': 'oa',
+      '\u0BCC': 'au'
+    };
+    const pulli = '\u0BCD';
+
+    let result = '';
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const next = text[i + 1];
+      if (vowels[ch]) {
+        result += vowels[ch];
+      } else if (consonants[ch]) {
+        const c = consonants[ch];
+        if (next === pulli) {
+          result += c;
+          i++;
+        } else if (next && signs[next]) {
+          result += c + signs[next];
+          i++;
+        } else {
+          result += c + 'a';
+        }
+      } else {
+        result += ch;
+      }
+    }
+    return result;
+  }
+
+  async function speakBrowserText(message) {
+    if (!message || !message.text) return;
+    const lang = currentLanguage || 'en';
+
+    // 1. First attempt: Stream crystal-clear MP3 audio via /api/tts endpoint
+    try {
+      const ttsUrl = `/api/tts?lang=${encodeURIComponent(lang)}&text=${encodeURIComponent(message.text)}`;
+      const response = await fetch(ttsUrl);
+      if (response.ok) {
+        const arrayBuf = await response.arrayBuffer();
+        if (arrayBuf.byteLength > 0) {
+          const bytes = new Uint8Array(arrayBuf);
+          let binary = '';
+          const len = bytes.byteLength;
+          for (let i = 0; i < len; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          const base64Audio = btoa(binary);
+          await audioPlayer.enqueue(base64Audio, {
+            text: message.text,
+            format: 'mp3',
+            generationId: message.generationId,
+            responseId: message.responseId,
+            segmentId: message.segmentId || 'seg_fb_tts',
+            chunkIndex: 1,
+            isFirst: true,
+            isLast: true,
+          });
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('[App] Server TTS fetch deferred to browser speech engine:', err.message);
+    }
+
+    // 2. Second attempt: Local browser SpeechSynthesis with dedicated Tamil/Hindi voice
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+      const bestVoice = getBestVoiceForLanguage(lang);
+      let spokenText = message.text;
+
+      if (lang === 'ta') {
+        spokenText = spokenText
+          .replace(/வாக்ஸ்ஆக்ட்\s*\(\s*VoxAct\s*\)/gi, 'வாக்ஸ் ஆக்ட்')
+          .replace(/\(\s*VoxAct\s*\)/gi, 'வாக்ஸ் ஆக்ட்')
+          .replace(/\bVoxAct\b/gi, 'வாக்ஸ் ஆக்ட்')
+          .replace(/108-ஐ/g, '1 0 8 ஐ')
+          .replace(/108/g, '1 0 8')
+          .replace(/112/g, '1 1 2');
+
+        // If no Tamil voice exists on this machine, transliterate to clear phonetic Tanglish
+        if (!bestVoice) {
+          spokenText = tamilToPhoneticTanglishClient(spokenText);
+          console.log('[App] No native Tamil voice found; using phonetic Tanglish for clear English TTS articulation');
+        }
+      } else if (lang === 'hi') {
+        spokenText = spokenText
+          .replace(/\(\s*VoxAct\s*\)/gi, 'वॉक्सएक्ट')
+          .replace(/\bVoxAct\b/gi, 'वॉक्सएक्ट');
+      }
+
+      const utterance = new SpeechSynthesisUtterance(spokenText);
+      if (bestVoice) {
+        utterance.voice = bestVoice;
+        utterance.lang = bestVoice.lang;
+      } else {
+        utterance.lang = lang === 'ta' ? 'ta-IN' : (lang === 'hi' ? 'hi-IN' : 'en-IN');
+      }
+
+      // Slightly relaxed speech rate for Tamil to articulate retroflex consonants with clarity
+      utterance.rate = lang === 'ta' ? 0.90 : 1.0;
+      utterance.pitch = 1.0;
+
+      utterance.onstart = () => {
+        audioPlayer.currentlyPlayingText = message.text;
+        updateState('speaking');
+      };
+      utterance.onend = () => {
+        audioPlayer.currentlyPlayingText = '';
+        if (message.generationId) {
+          sendMessage({ type: 'playback_complete', generationId: message.generationId });
+        }
+        updateState('listening');
+      };
+      utterance.onerror = (e) => {
+        console.warn('[App] SpeechSynthesis error:', e.error);
+        updateState('listening');
+      };
+
+      window.speechSynthesis.speak(utterance);
+    }
   }
 
   // ─── Care Navigation & Leaflet Map ─────────────────────────────
@@ -852,8 +1032,17 @@
         const orig = testAudioBtn.innerHTML;
         testAudioBtn.innerHTML = '<span>🔊 Testing...</span>';
         const played = await audioPlayer.testAudio();
+
+        const testPhrases = {
+          ta: 'வணக்கம்! நான் வாக்ஸ்ஆக்ட் (VoxAct). தமிழ் குரல் தெளிவாக கேட்கிறதா?',
+          hi: 'नमस्ते! मैं वॉक्सएक्ट (VoxAct) हूँ। क्या आवाज़ स्पष्ट सुनाई दे रही है?',
+          en: 'Hello! I am VoxAct. Voice audio output is active and clear.'
+        };
+        const phrase = testPhrases[currentLanguage] || testPhrases.en;
+
         if (played) {
-          addTranscriptMessage('system', '🔊 Speaker check: Two-tone chime played. If you heard the chime, your device audio output is active and working!');
+          addTranscriptMessage('system', `🔊 Speaker check: Audio chime played. Testing voice in ${currentLanguage === 'ta' ? 'தமிழ் (Tamil)' : (currentLanguage === 'hi' ? 'हिन्दी (Hindi)' : 'English')}: "${phrase}"`);
+          speakBrowserText({ text: phrase, generationId: null });
         } else {
           addTranscriptMessage('system', '⚠️ Speaker check failed. Please ensure your browser has permission to play audio and volume is turned up.');
         }
@@ -1485,22 +1674,8 @@
           return;
         }
         addTranscriptMessage('assistant', message.text);
-        if (message.speakBrowser && typeof window !== 'undefined' && window.speechSynthesis) {
-          window.speechSynthesis.cancel();
-          const utterance = new SpeechSynthesisUtterance(message.text);
-          utterance.rate = 1.0;
-          utterance.onstart = () => {
-            audioPlayer.currentlyPlayingText = message.text;
-            updateState('speaking');
-          };
-          utterance.onend = () => {
-            audioPlayer.currentlyPlayingText = '';
-            if (message.generationId) {
-              sendMessage({ type: 'playback_complete', generationId: message.generationId });
-            }
-            updateState('listening');
-          };
-          window.speechSynthesis.speak(utterance);
+        if (message.speakBrowser) {
+          speakBrowserText(message);
         }
         break;
 
@@ -1581,6 +1756,7 @@
     const onAudioHalt = config.onAudioHalt || (() => {});
     const onSendInterruptStart = config.onSendInterruptStart || (() => {});
     const onSubmitSpeech = config.onSubmitSpeech || (() => {});
+    const onInterimUpdate = config.onInterimUpdate || (() => {});
     const silenceTimeoutMs = config.silenceTimeoutMs !== undefined ? config.silenceTimeoutMs : 750;
 
     let turnFinalText = '';
@@ -1596,6 +1772,7 @@
       turnFinalText = '';
       interimText = '';
       hasInterrupted = false;
+      onInterimUpdate('', false);
     }
 
     function processRecognitionEvent(results, resultIndex = 0) {
@@ -1619,6 +1796,11 @@
 
       const currentSpeech = (turnFinalText + interim).trim();
       if (!currentSpeech) return null;
+
+      // Update visible interim speech preview (never sent to triage or /api/chat)
+      if (onInterimUpdate) {
+        onInterimUpdate(currentSpeech, Boolean(interim));
+      }
 
       // ── Instant Interim Interruption Detection ──────────────────────
       const isSpeaking = isSpeakingFn();
@@ -1724,12 +1906,21 @@
     recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = (LANGUAGE_CONFIGS[currentLanguage] && LANGUAGE_CONFIGS[currentLanguage].recognitionLang) || 'en-US';
+    recognition.lang = (LANGUAGE_CONFIGS[currentLanguage] && LANGUAGE_CONFIGS[currentLanguage].recognitionLang) || 'en-IN';
     recognition.maxAlternatives = 1;
 
     activeSpeechTurnController = createSpeechTurnController({
       isSpeakingFn: isAssistantSpeaking,
       getAssistantTextFn: () => (audioPlayer ? audioPlayer.currentlyPlayingText : ''),
+      onInterimUpdate: (speech, isInterim) => {
+        if (stateText) {
+          if (isInterim && speech) {
+            stateText.textContent = `🎙️ "${speech}"`;
+          } else if (!isInterim && currentState === 'listening') {
+            stateText.textContent = STATE_DISPLAY['listening'];
+          }
+        }
+      },
       onAudioHalt: (phrase) => {
         audioPlayer.stop();
         if (typeof window !== 'undefined' && window.speechSynthesis) {
@@ -1945,6 +2136,8 @@
       transcriptEmpty.style.display = 'none';
     }
 
+    const trimmed = text.trim();
+
     // A user message always starts a new turn: clear the assistant bubble reference
     if (role === 'user') {
       currentAssistantBubble = null;
@@ -1952,10 +2145,21 @@
       const lastMsg = transcriptContainer.lastElementChild;
       if (lastMsg && lastMsg.classList.contains('user')) {
         const lastBubble = lastMsg.querySelector('.message-bubble');
-        if (lastBubble && lastBubble.textContent.trim() === text.trim()) {
+        if (lastBubble && lastBubble.textContent.trim() === trimmed) {
           return;
         }
       }
+    }
+
+    // Single Assistant Bubble Consolidation: If an assistant message bubble already exists for this turn,
+    // merge subsequent sentence segments into the existing bubble instead of rendering 4 separate bubbles!
+    if (role === 'assistant' && currentAssistantBubble) {
+      const cur = currentAssistantBubble.textContent.trim();
+      if (!cur.includes(trimmed)) {
+        currentAssistantBubble.textContent = cur ? `${cur} ${trimmed}` : trimmed;
+      }
+      transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
+      return;
     }
 
     const messageEl = document.createElement('div');
@@ -1982,7 +2186,7 @@
 
     const bubble = document.createElement('div');
     bubble.className = 'message-bubble';
-    bubble.textContent = text;
+    bubble.textContent = trimmed;
     wrapper.appendChild(bubble);
 
     messageEl.appendChild(avatar);
@@ -2030,26 +2234,42 @@
       });
     }
 
-    // 2. Extract Differential Conditions
+    // 2. Extract Differential Conditions with Pattern Match Percentages
     let conditions = data.possibleConditions;
     if (!conditions && data.analysisResult?.possibleConditions) conditions = data.analysisResult.possibleConditions;
 
-    if (conditions && Array.isArray(conditions) && conditions.length > 0 && conditionsList) {
+    if (conditionsList) {
       conditionsList.innerHTML = '';
-      conditions.slice(0, 4).forEach(c => {
-        const item = document.createElement('div');
-        item.className = 'condition-item';
-        item.innerHTML = `
-          <div class="condition-header-row">
-            <span>${c.condition}</span>
-            <span class="condition-match-text">possible pattern match</span>
-          </div>
-          <div class="condition-progress">
-            <div class="condition-fill" style="width: 70%"></div>
-          </div>
-        `;
-        conditionsList.appendChild(item);
-      });
+      if (conditions && Array.isArray(conditions) && conditions.length > 0) {
+        conditions.slice(0, 4).forEach(c => {
+          const score = c.patternMatchScore !== undefined ? c.patternMatchScore : (c.confidence !== undefined ? c.confidence : 0.65);
+          const percent = Math.min(99, Math.max(15, Math.round(score * 100)));
+          const item = document.createElement('div');
+          item.className = 'condition-item';
+          item.innerHTML = `
+            <div class="condition-header-row">
+              <span class="condition-name">${c.condition}</span>
+              <span class="condition-match-text">${percent}% pattern match</span>
+            </div>
+            <div class="condition-progress">
+              <div class="condition-fill" style="width: ${percent}%"></div>
+            </div>
+          `;
+          conditionsList.appendChild(item);
+        });
+
+        const disclaimer = document.createElement('div');
+        disclaimer.className = 'condition-disclaimer-note';
+        disclaimer.style.cssText = 'font-size: 0.72rem; color: var(--text-tertiary, #94a3b8); margin-top: 6px; text-align: right; font-style: italic;';
+        disclaimer.textContent = 'Pattern match only — not a diagnosis.';
+        conditionsList.appendChild(disclaimer);
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'empty-conditions-note';
+        empty.style.cssText = 'color: var(--text-tertiary, #94a3b8); font-size: 0.85rem; padding: 12px 0; text-align: center;';
+        empty.textContent = 'No clear pattern identified from the information provided.';
+        conditionsList.appendChild(empty);
+      }
     }
 
     // 3. Extract Urgency Badge

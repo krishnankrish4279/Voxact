@@ -1131,9 +1131,9 @@ class Orchestrator extends EventEmitter {
     const genId = this._newGeneration();
     let greeting = "Hi there. I'm VoxAct, your health triage assistant. I'm here to help you understand your symptoms and find the right care. So, tell me... what's going on? How are you feeling?";
     if (this.language === 'ta') {
-      greeting = "வணக்கம். நான் VoxAct, உங்கள் மருத்துவ உதவியாளர். உங்களுக்கு என்ன பிரச்சனை? உடம்பு எப்படி இருக்கிறது என்பதை சொல்லுங்கள்.";
+      greeting = "வணக்கம். நான் வாக்ஸ்ஆக்ட் (VoxAct), உங்கள் மருத்துவ உதவியாளர். உங்களுக்கு என்ன பிரச்சனை? உடம்பு எப்படி இருக்கிறது என்பதை சொல்லுங்கள்.";
     } else if (this.language === 'hi') {
-      greeting = "नमस्ते. मैं VoxAct हूँ, आपका मेडिकल ट्रायज सहायक. आपको क्या समस्या महसूस हो रही है? आप कैसा महसूस कर रहे हैं?";
+      greeting = "नमस्ते. मैं वॉक्सएक्ट (VoxAct) हूँ, आपका मेडिकल ट्रायज सहायक. आपको क्या समस्या महसूस हो रही है? आप कैसा महसूस कर रहे हैं?";
     }
 
     this.llm.addAssistantMessage(greeting);

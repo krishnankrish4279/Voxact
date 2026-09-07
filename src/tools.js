@@ -65,9 +65,24 @@ const SYMPTOM_CONDITIONS = {
     { condition: 'Cardiac Issue', confidence: 0.2, urgency: 'emergency' },
   ],
   rash: [
-    { condition: 'Contact Dermatitis', confidence: 0.5, urgency: 'low' },
-    { condition: 'Allergic Reaction', confidence: 0.45, urgency: 'medium' },
-    { condition: 'Eczema', confidence: 0.4, urgency: 'low' },
+    { condition: 'Contact Dermatitis', confidence: 0.5, patternMatchScore: 0.5, urgency: 'low' },
+    { condition: 'Allergic Reaction', confidence: 0.45, patternMatchScore: 0.45, urgency: 'medium' },
+    { condition: 'Eczema', confidence: 0.4, patternMatchScore: 0.4, urgency: 'low' },
+  ],
+  'knee pain': [
+    { condition: 'Knee Osteoarthritis / Strain', confidence: 0.70, patternMatchScore: 0.70, urgency: 'low' },
+    { condition: 'Patellofemoral Pain Syndrome', confidence: 0.55, patternMatchScore: 0.55, urgency: 'low' },
+    { condition: 'Ligament or Meniscus Strain', confidence: 0.45, patternMatchScore: 0.45, urgency: 'medium' },
+  ],
+  vomiting: [
+    { condition: 'Gastroenteritis', confidence: 0.72, patternMatchScore: 0.72, urgency: 'medium' },
+    { condition: 'Food Poisoning', confidence: 0.60, patternMatchScore: 0.60, urgency: 'medium' },
+    { condition: 'Gastritis', confidence: 0.45, patternMatchScore: 0.45, urgency: 'low' },
+  ],
+  weakness: [
+    { condition: 'Dehydration / Fatigue', confidence: 0.65, patternMatchScore: 0.65, urgency: 'low' },
+    { condition: 'Viral Illness Recovery', confidence: 0.50, patternMatchScore: 0.50, urgency: 'low' },
+    { condition: 'Electrolyte Imbalance', confidence: 0.42, patternMatchScore: 0.42, urgency: 'medium' },
   ],
 };
 
@@ -166,10 +181,12 @@ async function analyzeSymptoms(symptoms, signal) {
           if (existing) {
             // Boost confidence if multiple symptoms point to same condition
             existing.confidence = Math.min(0.95, existing.confidence + 0.15);
+            existing.patternMatchScore = existing.confidence;
             existing.matchedSymptoms.push(symptom);
           } else {
             results.push({
               ...cond,
+              patternMatchScore: cond.patternMatchScore || cond.confidence,
               matchedSymptoms: [symptom],
             });
           }
@@ -178,18 +195,20 @@ async function analyzeSymptoms(symptoms, signal) {
     }
   }
 
-  // If no matches found, return a generic result
-  if (results.length === 0) {
+  // If unknown symptoms provided that matched zero known patterns, provide heuristic evaluation;
+  // If no symptoms provided, leave results empty so UI renders the clean empty state
+  if (results.length === 0 && normalizedSymptoms.length > 0 && normalizedSymptoms.some(s => s.trim().length > 0)) {
     results.push({
-      condition: 'Unspecified Condition',
-      confidence: 0.3,
+      condition: 'Awaiting Further Evaluation',
+      confidence: 0.35,
+      patternMatchScore: 0.35,
       urgency: 'low',
       matchedSymptoms: normalizedSymptoms,
     });
   }
 
-  // Sort by confidence descending
-  results.sort((a, b) => b.confidence - a.confidence);
+  // Sort by patternMatchScore/confidence descending
+  results.sort((a, b) => (b.patternMatchScore || b.confidence) - (a.patternMatchScore || a.confidence));
 
   return {
     symptoms: normalizedSymptoms,

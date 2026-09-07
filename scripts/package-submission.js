@@ -58,6 +58,7 @@ fs.mkdirSync(projectStagingDir, { recursive: true });
 
 // Whitelist of files and directories to include (strictly excluding .env and node_modules)
 const whitelist = [
+  'api',
   'src',
   'public',
   'test',
@@ -65,6 +66,7 @@ const whitelist = [
   'scripts',
   'package.json',
   'server.js',
+  'vercel.json',
   'README.md',
   'RIME_EVIDENCE.md',
   '.env.example',

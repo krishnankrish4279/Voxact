@@ -5,6 +5,7 @@
  */
 
 const WebSocket = require('ws');
+const { synthesizeClearAudio } = require('./tts-synthesizer');
 
 // Validated Rime configurations for multilingual medical triage
 const LANGUAGE_PROFILES = {
@@ -179,7 +180,7 @@ class RimeClient {
     }
 
     if (!this.isConfigured()) {
-      return { skipped: true, reason: 'unconfigured', isSimulated: true };
+      return await this.synthesizeHTTP(text, onAudioChunk, signal);
     }
 
     // Ensure connection
@@ -362,68 +363,97 @@ class RimeClient {
       return { skipped: true, reason: 'empty text' };
     }
 
-    if (!this.isConfigured()) {
-      return {
-        cancelled: false,
-        chunksReceived: 0,
-        totalBytes: 0,
-        ttfbMs: 15,
-        totalMs: 25,
-        method: 'simulation',
-        isSimulated: true,
-      };
-    }
-
     const startTime = Date.now();
 
-    try {
-      const response = await fetch('https://users.rime.ai/v1/rime-tts', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-          'Accept': 'audio/mp3, audio/mpeg',
-        },
-        body: JSON.stringify({
-          text,
-          speaker: this.speaker,
-          modelId: this.modelId,
-          lang: this.language,
-          speedAlpha: this.speedAlpha,
-        }),
-        signal,
-      });
+    // 1. If Rime is configured, attempt Rime synthesis
+    if (this.isConfigured()) {
+      try {
+        const response = await fetch('https://users.rime.ai/v1/rime-tts', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json',
+            'Accept': 'audio/mp3, audio/mpeg',
+          },
+          body: JSON.stringify({
+            text,
+            speaker: this.speaker,
+            modelId: this.modelId,
+            lang: this.language,
+            speedAlpha: this.speedAlpha,
+          }),
+          signal,
+        });
 
-      if (!response.ok) {
-        throw new Error(`Rime HTTP error: ${response.status} ${response.statusText}`);
+        if (response.ok) {
+          const arrayBuffer = await response.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          const firstByteTime = Date.now();
+
+          onAudioChunk(buffer.toString('base64'), {
+            chunkIndex: 1,
+            isFirst: true,
+            isLast: true,
+          });
+
+          return {
+            cancelled: false,
+            chunksReceived: 1,
+            totalBytes: buffer.length,
+            ttfbMs: firstByteTime - startTime,
+            totalMs: Date.now() - startTime,
+            method: 'http',
+            isSimulated: false,
+          };
+        }
+        console.warn(`[Rime] HTTP returned ${response.status}, falling back to clear audio synthesizer`);
+      } catch (err) {
+        if (err.name === 'AbortError' || signal?.aborted) {
+          return { cancelled: true, reason: 'aborted' };
+        }
+        console.warn('[Rime] HTTP synthesis error, falling back to clear audio:', err.message);
       }
+    }
 
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      const firstByteTime = Date.now();
+    // 2. High-clarity native multilingual audio synthesis (crystal-clear Tamil / Hindi / English)
+    try {
+      const clearAudio = await synthesizeClearAudio(text, { language: this.language, signal });
+      if (clearAudio && clearAudio.base64) {
+        const firstByteTime = Date.now();
+        onAudioChunk(clearAudio.base64, {
+          chunkIndex: 1,
+          isFirst: true,
+          isLast: true,
+          format: 'mp3',
+        });
 
-      // Send as single chunk
-      onAudioChunk(buffer.toString('base64'), {
-        chunkIndex: 1,
-        isFirst: true,
-        isLast: true,
-      });
-
-      return {
-        cancelled: false,
-        chunksReceived: 1,
-        totalBytes: buffer.length,
-        ttfbMs: firstByteTime - startTime,
-        totalMs: Date.now() - startTime,
-        method: 'http',
-      };
-    } catch (err) {
-      if (err.name === 'AbortError' || signal?.aborted) {
+        return {
+          cancelled: false,
+          chunksReceived: 1,
+          totalBytes: clearAudio.buffer.length,
+          ttfbMs: firstByteTime - startTime,
+          totalMs: Date.now() - startTime,
+          method: 'clear-tts',
+          isSimulated: false,
+        };
+      }
+    } catch (clearErr) {
+      if (clearErr.name === 'AbortError' || signal?.aborted) {
         return { cancelled: true, reason: 'aborted' };
       }
-      console.error('[Rime] HTTP synthesis error:', err.message);
-      throw err;
+      console.warn('[Rime] Clear TTS synthesis error:', clearErr.message);
     }
+
+    // 3. Fallback simulation when offline/unavailable
+    return {
+      cancelled: false,
+      chunksReceived: 0,
+      totalBytes: 0,
+      ttfbMs: 15,
+      totalMs: 25,
+      method: 'simulation',
+      isSimulated: true,
+    };
   }
 
   /**
