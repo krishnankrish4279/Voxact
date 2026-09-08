@@ -303,9 +303,11 @@ class LLMClient {
         careType,
         urgencyLevel: careType === 'emergency' ? 'high' : 'medium'
       };
-      if (this.location && this.location.lat !== null && this.location.lat !== undefined && this.location.lon !== null && this.location.lon !== undefined) {
-        facilityArgs.lat = this.location.lat;
-        facilityArgs.lon = this.location.lon;
+      const uLat = this.location?.lat ?? null;
+      const uLon = this.location?.lon ?? (this.location?.lng ?? null);
+      if (uLat !== null && uLon !== null) {
+        facilityArgs.lat = uLat;
+        facilityArgs.lon = uLon;
         if (this.location.city) facilityArgs.locationName = this.location.city;
       }
 
@@ -678,9 +680,11 @@ class LLMClient {
       symptoms: this.accumulatedSymptoms || [],
       userText: lastUserMsg,
     };
-    if (this.location && this.location.lat !== null && this.location.lat !== undefined && this.location.lon !== null && this.location.lon !== undefined) {
-      facilityArgs.lat = this.location.lat;
-      facilityArgs.lon = this.location.lon;
+    const uLatNamed = this.location?.lat ?? null;
+    const uLonNamed = this.location?.lon ?? (this.location?.lng ?? null);
+    if (uLatNamed !== null && uLonNamed !== null) {
+      facilityArgs.lat = uLatNamed;
+      facilityArgs.lon = uLonNamed;
       if (this.location.city) facilityArgs.locationName = this.location.city;
     }
 
@@ -724,9 +728,11 @@ class LLMClient {
       symptoms: this.accumulatedSymptoms || [],
       userText: lastUserMsg,
     };
-    if (this.location && this.location.lat !== null && this.location.lat !== undefined && this.location.lon !== null && this.location.lon !== undefined) {
-      facilityArgs.lat = this.location.lat;
-      facilityArgs.lon = this.location.lon;
+    const uLatHosp = this.location?.lat ?? null;
+    const uLonHosp = this.location?.lon ?? (this.location?.lng ?? null);
+    if (uLatHosp !== null && uLonHosp !== null) {
+      facilityArgs.lat = uLatHosp;
+      facilityArgs.lon = uLonHosp;
       if (this.location.city) facilityArgs.locationName = this.location.city;
     }
 

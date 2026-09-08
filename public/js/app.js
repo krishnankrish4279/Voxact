@@ -869,7 +869,12 @@
     });
 
     if (careMapInstance && typeof L !== 'undefined') {
-      if (bounds.length === 1) {
+      if (facilities.length === 1 && facilities[0].lat && facilities[0].lon) {
+        careMapInstance.setView([facilities[0].lat, facilities[0].lon], 15);
+        if (facilityMarkers[0]) {
+          facilityMarkers[0].openPopup();
+        }
+      } else if (bounds.length === 1) {
         careMapInstance.setView(bounds[0], 14);
         if (facilityMarkers[0]) {
           facilityMarkers[0].openPopup();
@@ -1183,6 +1188,7 @@
           normalizedTranscript: displayText,
           medicalTerms: normalized.detectedMedicalTerms || [],
           isAmbiguous: normalized.isAmbiguous,
+          location: currentLocation,
           pendingAction,
           nearbyCareStatus,
           turnId,
@@ -2133,6 +2139,7 @@
             normalizedTranscript: displayText,
             medicalTerms: normalized.detectedMedicalTerms || [],
             isAmbiguous: normalized.isAmbiguous,
+            location: currentLocation,
             pendingAction,
             nearbyCareStatus,
             turnId,

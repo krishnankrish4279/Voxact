@@ -176,6 +176,9 @@ wss.on('connection', (ws) => {
           break;
 
         case 'user_speech':
+          if (message.location) {
+            orchestrator.setLocation(message.location);
+          }
           if (message.pendingAction !== undefined) {
             orchestrator.pendingAction = message.pendingAction;
             orchestrator.llm.pendingAction = message.pendingAction;
@@ -188,7 +191,7 @@ wss.on('connection', (ws) => {
             }
           }
           // User finished speaking (final transcription)
-          await orchestrator.handleUserSpeech(message.text || message);
+          await orchestrator.handleUserSpeech(message);
           break;
 
         case 'user_speech_interim':

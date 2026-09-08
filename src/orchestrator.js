@@ -144,6 +144,9 @@ class Orchestrator extends EventEmitter {
         accuracy: loc.accuracy !== undefined ? loc.accuracy : null,
         timestamp: loc.timestamp || Date.now(),
       };
+      if (this.llm) {
+        this.llm.location = this.sessionLocation;
+      }
       console.log(`[Orchestrator:${this.sessionId}] Updated location to:`, this.sessionLocation);
     }
   }
@@ -343,6 +346,9 @@ class Orchestrator extends EventEmitter {
       rawText = (textOrPayload.rawTranscript || textOrPayload.text || '').trim();
       clientNormalized = textOrPayload.normalizedTranscript;
       clientTerms = textOrPayload.medicalTerms;
+      if (textOrPayload.location) {
+        this.setLocation(textOrPayload.location);
+      }
     } else {
       rawText = String(textOrPayload || '').trim();
     }

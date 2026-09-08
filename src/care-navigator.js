@@ -193,18 +193,49 @@ const VERIFIED_FACILITIES = [
 ];
 
 /**
+ * Calculate Great-Circle distance using Haversine formula (in kilometers)
+ * Earth radius = 6371.0088 km
+ */
+function calculateDistanceKm(lat1, lon1, lat2, lon2) {
+  if (lat1 === null || lon1 === null || lat2 === null || lon2 === null) return 999;
+  const nLat1 = Number(lat1);
+  const nLon1 = Number(lon1);
+  const nLat2 = Number(lat2);
+  const nLon2 = Number(lon2);
+  if (isNaN(nLat1) || isNaN(nLon1) || isNaN(nLat2) || isNaN(nLon2)) return 999;
+
+  const R = 6371.0088; // Earth radius in km
+  const toRad = Math.PI / 180;
+  const dLat = (nLat2 - nLat1) * toRad;
+  const dLon = (nLon2 - nLon1) * toRad;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(nLat1 * toRad) * Math.cos(nLat2 * toRad) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c * 100) / 100;
+}
+
+/**
  * Calculate Great-Circle distance using Haversine formula (in miles)
  */
 function calculateDistanceMiles(lat1, lon1, lat2, lon2) {
-  const R = 3958.8; // Earth radius in miles
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return Math.round(R * c * 10) / 10;
+  const distKm = calculateDistanceKm(lat1, lon1, lat2, lon2);
+  return Math.round(distKm * 0.621371 * 10) / 10;
+}
+
+/**
+ * Format metric distance clearly (e.g. "850 metres" or "1.2 km")
+ */
+function formatDistanceMetric(distKmOrMiles) {
+  if (distKmOrMiles === null || distKmOrMiles === undefined) return '';
+  // If passed value looks like km
+  let distKm = Number(distKmOrMiles);
+  if (distKm < 1.0) {
+    const metres = Math.round(distKm * 1000);
+    return `${metres} metres`;
+  }
+  return `${distKm.toFixed(1)} km`;
 }
 
 /**
@@ -221,7 +252,7 @@ function classifyFacilitySpecialty(facility) {
   ].join(' ').toLowerCase();
 
   // 1. Eye / Ophthalmology
-  const isEye = /\b(eye|ophthalmology|ophthalmic|vision|retina|cornea|netralaya|drishti|nethralaya|kann|கண்|ஆँख)\b/i.test(nameStr);
+  const isEye = /\b(eye|ophthalmology|ophthalmic|vision|retina|cornea|netralaya|drishti|nethralaya|kann|கண்|आँख)\b/i.test(nameStr);
 
   // 2. Dental
   const isDental = /\b(dental|dentist|dentistry|tooth|teeth|oral|orthodontic|dento|பல்|दांत)\b/i.test(nameStr);
@@ -236,22 +267,24 @@ function classifyFacilitySpecialty(facility) {
   const isCosmetic = /\b(cosmetic|plastic\s*surgery|aesthetic|derma|hair\s*transplant|skin\s*clinic|laser)\b/i.test(nameStr);
 
   // 6. Orthopedic specialty
-  const isOrthopedic = /\b(orthopedic|orthopaedic|bone|joint\s*hospital)\b/i.test(nameStr);
+  const isOrthopedic = /\b(orthopedic|orthopaedic|bone|joint\s*hospital|fracture\s*hospital)\b/i.test(nameStr);
 
   // 7. Oncology / Cancer
   const isCancer = /\b(cancer|oncology|புற்றுநோய்|कैंसर)\b/i.test(nameStr);
 
-  // General Hospital / Multispecialty / Trauma Center
-  const hasMultispecialty = /\b(multispecialty|multi-specialty|multi\s*super\s*speciality|general\s*hospital|government\s*hospital|govt\s*hospital|district\s*hospital|medical\s*college|trauma\s*center|city\s*hospital|memorial\s*hospital|lifeline|mission\s*hospital|apollo|kauvery|fortis|manipal|aiims|max|cpmc|ucsf|zuckerberg|harborview)\b/i.test(nameStr);
+  // General Hospital / Multispecialty / Trauma Center / Nursing Home / Primary Health Centre
+  const hasMultispecialty = /\b(multispecialty|multi-specialty|multi\s*super\s*speciality|general\s*hospital|government\s*hospital|govt\s*hospital|district\s*hospital|medical\s*college|trauma\s*center|city\s*hospital|memorial\s*hospital|lifeline|mission\s*hospital|apollo|kauvery|fortis|manipal|aiims|max|cpmc|ucsf|zuckerberg|harborview|nursing\s*home|primary\s*health|health\s*care\s*center|health\s*centre)\b/i.test(nameStr);
 
-  const isAnySpecialty = isEye || isDental || isMaternity || isCosmetic || isCancer;
-  const isGeneral = hasMultispecialty || (!isAnySpecialty && /\b(hospital|medical\s*center|healthcare)\b/i.test(nameStr));
+  const isAnySpecialty = isEye || isDental || isMaternity || isCosmetic || isCancer || isOrthopedic;
+  const isGeneral = hasMultispecialty || (!isAnySpecialty && /\b(hospital|medical\s*center|healthcare|clinic|nursing\s*home)\b/i.test(nameStr));
 
-  // Verified emergency capability: NEVER assume just because name has "Hospital"
-  // Must have emergency / trauma keywords or explicit verified flag in metadata
+  // Verified emergency capability: NEVER assume just because name has "Hospital" or has an OSM emergency tag if it's an eye/dental/cosmetic/ortho specialty!
+  const isRestrictedSpecialty = isEye || isDental || isCosmetic || (isOrthopedic && !hasMultispecialty);
   const isEmergencyVerified = Boolean(
-    facility.emergencyCapable ||
-    /\b(trauma\s*center|emergency\s*department|emergency\s*room|\b24\s*hours?\s*emergency\b|\b24x7\s*emergency\b|accident\s*&\s*emergency|casualty)\b/i.test(nameStr)
+    !isRestrictedSpecialty && (
+      facility.emergencyCapable ||
+      /\b(trauma\s*center|emergency\s*department|emergency\s*room|\b24\s*hours?\s*emergency\b|\b24x7\s*emergency\b|accident\s*&\s*emergency|casualty)\b/i.test(nameStr)
+    )
   );
 
   let primarySpecialty = 'general';
@@ -322,8 +355,12 @@ function isFacilityRelevant(facility, careNeed) {
 
   if (careNeed === 'general_medical') {
     // General fever / headache / vomiting / weakness / generic "suggest hospital":
-    // Must NOT be an eye hospital, dental clinic, maternity center, cosmetic clinic!
-    if (info.isEye || info.isDental || info.isMaternity || info.isCosmetic) {
+    // Must NOT be an eye hospital, dental clinic, maternity center, cosmetic clinic
+    if (info.isEye || info.isDental || info.isCosmetic) {
+      return false;
+    }
+    // Pure orthopedic hospital without general/multispecialty capabilities is not suited for fever/headache/nausea
+    if (info.isOrthopedic && !info.isGeneral) {
       return false;
     }
     return true;
@@ -332,8 +369,8 @@ function isFacilityRelevant(facility, careNeed) {
   if (careNeed === 'emergency') {
     // Breathing difficulty / chest pain / acute emergency:
     // Only emergency-capable general/multispecialty hospitals or trauma centers!
-    // Never an eye hospital, dental clinic, fertility center, or non-emergency clinic!
-    if (info.isEye || info.isDental || info.isMaternity || info.isCosmetic) {
+    // Never an eye hospital, dental clinic, fertility center, cosmetic clinic, or pure orthopedic hospital!
+    if (info.isEye || info.isDental || info.isMaternity || info.isCosmetic || (info.isOrthopedic && !info.isGeneral)) {
       return false;
     }
     // Must be a general/multispecialty hospital or emergency-capable
@@ -341,18 +378,17 @@ function isFacilityRelevant(facility, careNeed) {
   }
 
   if (careNeed === 'eye') {
-    // Eye symptoms: eye hospitals and general/multispecialty hospitals are relevant
-    if (info.isDental || info.isMaternity || info.isCosmetic) return false;
+    if (info.isDental || info.isMaternity || info.isCosmetic || info.isOrthopedic) return false;
     return info.isEye || info.isGeneral;
   }
 
   if (careNeed === 'dental') {
-    if (info.isEye || info.isMaternity || info.isCosmetic) return false;
+    if (info.isEye || info.isMaternity || info.isCosmetic || info.isOrthopedic) return false;
     return info.isDental || info.isGeneral;
   }
 
   if (careNeed === 'maternity') {
-    if (info.isEye || info.isDental || info.isCosmetic) return false;
+    if (info.isEye || info.isDental || info.isCosmetic || info.isOrthopedic) return false;
     return info.isMaternity || info.isGeneral;
   }
 
@@ -373,7 +409,7 @@ function calculateFacilityRelevanceScore(facility, careNeed) {
   if (careNeed === 'named_facility') return 1.0;
   if (careNeed === 'emergency') {
     if (info.isEmergencyVerified) return 1.0;
-    if (info.isGeneral) return 0.8;
+    if (info.isGeneral) return 0.85;
     return 0.5;
   }
   if (careNeed === 'eye') {
@@ -420,16 +456,6 @@ function determineCareCategory(urgencyLevel, preferredCareType = null) {
   return 'primary_care';
 }
 
-function formatDistanceMetric(distMiles) {
-  if (distMiles === null || distMiles === undefined) return '';
-  const distKm = distMiles * 1.60934;
-  if (distKm < 1.0) {
-    const metres = Math.round(distKm * 1000);
-    return `${metres} metres`;
-  }
-  return `${distKm.toFixed(1)} km`;
-}
-
 /**
  * Determine if geographical coordinates or location name refer to India / South Asia region
  */
@@ -442,13 +468,173 @@ function isIndiaRegion(lat, lon, locationName = '') {
     }
   }
   const locLower = String(locationName || '').toLowerCase();
-  const indiaKeywords = ['chennai', 'delhi', 'mumbai', 'bangalore', 'bengaluru', 'hyderabad', 'kolkata', 'tamil nadu', 'india'];
+  const indiaKeywords = ['chennai', 'delhi', 'mumbai', 'bangalore', 'bengaluru', 'hyderabad', 'kolkata', 'tamil nadu', 'india', 'ambattur', 'ayapakkam', 'ayappakkam'];
   return indiaKeywords.some(k => locLower.includes(k));
 }
 
 /**
+ * Query Overpass API for all live healthcare POIs within circular radius
+ */
+async function fetchOverpassFacilities(lat, lon, radiusMeters, signal = null) {
+  const query = `[out:json][timeout:8];(
+    node["amenity"~"hospital|clinic|doctors"](around:${radiusMeters},${lat},${lon});
+    way["amenity"~"hospital|clinic|doctors"](around:${radiusMeters},${lat},${lon});
+    node["healthcare"~"hospital|clinic|centre|doctor"](around:${radiusMeters},${lat},${lon});
+    way["healthcare"~"hospital|clinic|centre|doctor"](around:${radiusMeters},${lat},${lon});
+  );out center tags;`;
+
+  const postData = 'data=' + encodeURIComponent(query);
+  const endpoints = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter'
+  ];
+
+  for (const endpoint of endpoints) {
+    if (signal?.aborted) break;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 7500);
+      const combinedSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'VoxAct-MedicalTriage/1.0 (Hackathon Care Navigation; contact@voxact.org)'
+        },
+        body: postData,
+        signal: combinedSignal
+      });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.elements)) {
+          return data.elements;
+        }
+      }
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      // Try next endpoint mirror
+    }
+  }
+  return [];
+}
+
+/**
+ * Query Overpass API for named facility search around user coordinates
+ */
+async function fetchOverpassNamedFacility(facilityName, lat, lon, signal = null) {
+  const safeName = (facilityName || '').replace(/[^\w\s]/g, '').trim();
+  if (!safeName) return [];
+
+  const query = `[out:json][timeout:8];(
+    node["amenity"~"hospital|clinic|doctors"]["name"~"${safeName}",i](around:25000,${lat},${lon});
+    way["amenity"~"hospital|clinic|doctors"]["name"~"${safeName}",i](around:25000,${lat},${lon});
+    node["healthcare"~"hospital|clinic|centre|doctor"]["name"~"${safeName}",i](around:25000,${lat},${lon});
+    way["healthcare"~"hospital|clinic|centre|doctor"]["name"~"${safeName}",i](around:25000,${lat},${lon});
+  );out center tags;`;
+
+  const postData = 'data=' + encodeURIComponent(query);
+  const endpoints = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter'
+  ];
+
+  for (const endpoint of endpoints) {
+    if (signal?.aborted) break;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 7500);
+      const combinedSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'VoxAct-MedicalTriage/1.0 (contact@voxact.org)'
+        },
+        body: postData,
+        signal: combinedSignal
+      });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.elements) && data.elements.length > 0) {
+          return data.elements;
+        }
+      }
+    } catch (e) {
+      if (signal?.aborted) throw e;
+    }
+  }
+  return [];
+}
+
+/**
+ * Parse an Overpass node/way element into the canonical VoxAct facility structure
+ */
+function parseOverpassElement(el, userLat, userLon, targetCategory = 'urgent_care') {
+  const tags = el.tags || {};
+  const cLat = el.lat || el.center?.lat;
+  const cLon = el.lon || el.center?.lon;
+  if (!cLat || !cLon) return null;
+
+  const facName = tags.name || tags['name:en'] || tags['name:ta'] || tags['name:hi'] || tags.operator || 'Healthcare Facility';
+  const distKm = calculateDistanceKm(userLat, userLon, cLat, cLon);
+  const distMiles = calculateDistanceMiles(userLat, userLon, cLat, cLon);
+  const distStr = formatDistanceMetric(distKm);
+
+  const specInfo = classifyFacilitySpecialty({
+    name: facName,
+    careType: tags.amenity || tags.healthcare || '',
+    address: [tags['addr:street'], tags['addr:suburb'], tags['addr:city']].filter(Boolean).join(', ')
+  });
+
+  const isHospital = tags.amenity === 'hospital' || tags.healthcare === 'hospital' || /hospital/i.test(facName);
+  let careTypeLabel = 'Walk-In Clinic';
+  if (isHospital) {
+    careTypeLabel = specInfo.isEmergencyVerified ? 'Emergency & Multi-Specialty Hospital' : 'General / Specialty Hospital';
+  } else if (tags.amenity === 'clinic' || tags.healthcare === 'clinic') {
+    careTypeLabel = 'Clinic / Primary Care';
+  } else if (/nursing home/i.test(facName)) {
+    careTypeLabel = 'Nursing Home & Clinic';
+  } else if (/health center|primary health/i.test(facName)) {
+    careTypeLabel = 'Primary Health Centre';
+  }
+
+  const addrParts = [tags['addr:street'], tags['addr:suburb'], tags['addr:city'], tags['addr:postcode']].filter(Boolean);
+  const address = addrParts.length > 0 ? addrParts.join(', ') : `${facName}, Local Area`;
+
+  return {
+    id: `osm_${el.type || 'node'}_${el.id}`,
+    name: facName,
+    careType: careTypeLabel,
+    category: isHospital ? 'emergency' : (targetCategory || 'urgent_care'),
+    address,
+    lat: cLat,
+    lon: cLon,
+    distanceKm: distKm,
+    distanceMiles: distMiles,
+    distance: distStr,
+    emergencyCapable: specInfo.isEmergencyVerified,
+    capabilities: specInfo.isEmergencyVerified ? ['emergency', 'high', 'medium', 'low'] : ['medium', 'low'],
+    specialtyInfo: specInfo,
+    source: 'live',
+    isFallback: false,
+    fallbackLabel: null,
+    openStatus: tags.opening_hours || null,
+    rating: null,
+    reviewCount: null,
+    mapsUrl: `https://www.google.com/maps/dir/?api=1&destination=${cLat},${cLon}`
+  };
+}
+
+/**
  * Search nearby healthcare facilities
- * Supports live OpenStreetMap Nominatim queries with verified fallback.
+ * True nearest GPS center with progressive circular radii (2 km -> 5 km -> 10 km).
+ * Primary sort: distanceKm ascending.
  * 
  * @param {object} options
  * @param {number} options.lat - User latitude
@@ -508,25 +694,9 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
     };
   }
 
-  let rawFacilities = [];
-  let liveSearchAttempted = false;
-  let liveSearchSucceeded = false;
-
-  // Progressive radius live Nominatim search around user's actual device coordinates
-  // Adaptive radii: 3 km (~0.027 deg) -> 5 km (~0.045 deg) -> 10 km (~0.090 deg) -> 15 km (~0.135 deg)
-  const searchRadii = [
-    { radiusKm: 3, delta: 0.027 },
-    { radiusKm: 5, delta: 0.045 },
-    { radiusKm: 10, delta: 0.090 },
-    { radiusKm: 15, delta: 0.135 }
-  ];
-
+  let rawCandidates = [];
+  let activeRadiusMeters = 2000;
   const facilityName = options.facilityName || options.facility_name || options.query || null;
-  const queryTerm = facilityName
-    ? facilityName
-    : (targetCategory === 'emergency'
-        ? 'hospital'
-        : (targetCategory === 'urgent_care' ? 'urgent care' : 'clinic'));
 
   // Determine user's medical need from symptoms and urgency
   const userCareNeed = determineUserCareNeed({
@@ -536,166 +706,242 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
     userText: options.userText
   });
 
-  for (const { radiusKm, delta } of searchRadii) {
-    if (signal?.aborted) break;
-    // Continue progressive search if we haven't found at least 5 facilities yet
-    if (rawFacilities.length >= 5) break;
+  // ─── 1. USER-NAMED FACILITY SEARCH ─────────────────────────────────
+  if (facilityName) {
+    let elements = await fetchOverpassNamedFacility(facilityName, userLat, userLon, signal);
+    if (elements.length > 0) {
+      rawCandidates = elements.map(el => parseOverpassElement(el, userLat, userLon, targetCategory)).filter(Boolean);
+    }
 
-    try {
-      liveSearchAttempted = true;
-      const viewbox = `${userLon - delta},${userLat + delta},${userLon + delta},${userLat - delta}`;
-      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(queryTerm)}&format=json&addressdetails=1&limit=15&viewbox=${viewbox}&bounded=1`;
-
-      const res = await fetch(url, {
-        headers: {
-          'User-Agent': 'VoxAct-MedicalTriage/1.0 (Hackathon Care Navigation; contact@voxact.org)'
-        },
-        signal
-      });
-
-      if (res.ok) {
-        liveSearchSucceeded = true;
-        const data = await res.json();
-        if (Array.isArray(data) && data.length > 0) {
-          const parsed = data.map((item, idx) => {
-            const itemLat = parseFloat(item.lat);
-            const itemLon = parseFloat(item.lon);
-            const dist = calculateDistanceMiles(userLat, userLon, itemLat, itemLon);
-            const distStr = formatDistanceMetric(dist);
-            const facName = item.name || (item.display_name ? item.display_name.split(',')[0].trim() : 'Healthcare Facility');
-            
-            const specInfo = classifyFacilitySpecialty({
-              name: facName,
-              display_name: item.display_name,
-              careType: item.type
+    // Secondary search via Nominatim for named query if Overpass didn't resolve
+    if (rawCandidates.length === 0) {
+      try {
+        const delta = 0.25; // ~25km
+        const viewbox = `${userLon - delta},${userLat + delta},${userLon + delta},${userLat - delta}`;
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(facilityName)}&format=json&addressdetails=1&limit=5&viewbox=${viewbox}&bounded=0`;
+        const res = await fetch(url, {
+          headers: { 'User-Agent': 'VoxAct-MedicalTriage/1.0 (Hackathon Care Navigation; contact@voxact.org)' },
+          signal
+        });
+        if (res.ok) {
+          const items = await res.json();
+          if (Array.isArray(items)) {
+            rawCandidates = items.map((item, idx) => {
+              const iLat = parseFloat(item.lat);
+              const iLon = parseFloat(item.lon);
+              const distKm = calculateDistanceKm(userLat, userLon, iLat, iLon);
+              const name = item.name || (item.display_name ? item.display_name.split(',')[0].trim() : facilityName);
+              const specInfo = classifyFacilitySpecialty({ name, display_name: item.display_name });
+              return {
+                id: `osm_${item.osm_id || idx}`,
+                name,
+                careType: 'General / Specialty Hospital',
+                category: 'emergency',
+                address: item.display_name || `${name}, Local Area`,
+                lat: iLat,
+                lon: iLon,
+                distanceKm: distKm,
+                distanceMiles: calculateDistanceMiles(userLat, userLon, iLat, iLon),
+                distance: formatDistanceMetric(distKm),
+                emergencyCapable: specInfo.isEmergencyVerified,
+                capabilities: ['emergency', 'high', 'medium', 'low'],
+                specialtyInfo: specInfo,
+                source: 'live',
+                isFallback: false,
+                fallbackLabel: null,
+                openStatus: null,
+                rating: null,
+                reviewCount: null,
+                mapsUrl: `https://www.google.com/maps/dir/?api=1&destination=${iLat},${iLon}`
+              };
             });
+          }
+        }
+      } catch (e) {}
+    }
+  } else {
+    // ─── 2. PROGRESSIVE RADIUS NEARBY SEARCH (2 km -> 5 km -> 10 km) ──
+    const radiiSteps = [2000, 5000, 10000];
 
-            const isHospital = item.type === 'hospital' || (item.display_name && item.display_name.toLowerCase().includes('hospital'));
-            const careTypeLabel = isHospital
-              ? (specInfo.isEmergencyVerified ? 'Emergency & Multi-Specialty Hospital' : 'General / Specialty Hospital')
-              : (targetCategory === 'urgent_care' ? 'Urgent Care Clinic' : 'Walk-In Clinic');
+    for (const radiusM of radiiSteps) {
+      if (signal?.aborted) break;
+      activeRadiusMeters = radiusM;
 
-            return {
-              id: `osm_${item.osm_id || idx}`,
-              name: facName,
-              careType: careTypeLabel,
-              category: isHospital ? 'emergency' : targetCategory,
-              address: item.display_name,
-              lat: itemLat,
-              lon: itemLon,
-              distanceMiles: dist,
-              distance: distStr,
-              emergencyCapable: specInfo.isEmergencyVerified, // DO NOT fabricate
-              capabilities: specInfo.isEmergencyVerified ? ['emergency', 'high', 'medium', 'low'] : ['medium', 'low'],
-              specialtyInfo: specInfo,
-              isFallback: false,
-              fallbackLabel: null,
-              openStatus: null, // DO NOT fabricate
-              rating: null,     // DO NOT fabricate
-              reviewCount: null // DO NOT fabricate
-            };
-          });
-
-          // MEDICAL RELEVANCE FILTER + DEDUPLICATION:
-          // Filter out facilities that do not match the user's medical care need
-          for (const fac of parsed) {
-            if (isFacilityRelevant(fac, userCareNeed)) {
-              const alreadyPresent = rawFacilities.some(existing =>
-                existing.name.toLowerCase() === fac.name.toLowerCase() ||
-                (Math.abs(existing.lat - fac.lat) < 0.0005 && Math.abs(existing.lon - fac.lon) < 0.0005)
-              );
-              if (!alreadyPresent) {
-                rawFacilities.push(fac);
-              }
-            }
+      // Primary engine: Overpass API POI Query
+      const elements = await fetchOverpassFacilities(userLat, userLon, radiusM, signal);
+      if (Array.isArray(elements) && elements.length > 0) {
+        for (const el of elements) {
+          const fac = parseOverpassElement(el, userLat, userLon, targetCategory);
+          if (fac && !rawCandidates.some(existing => existing.id === fac.id || (Math.abs(existing.lat - fac.lat) < 0.0003 && Math.abs(existing.lon - fac.lon) < 0.0003))) {
+            rawCandidates.push(fac);
           }
         }
       }
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      // Network failure / offline
+
+      // If Overpass returned candidates, filter and check if we have enough relevant ones (>= 3)
+      const relevantFound = rawCandidates.filter(f => isFacilityRelevant(f, userCareNeed) && f.distanceKm <= (radiusM / 1000) * 1.05);
+      if (relevantFound.length >= 3) {
+        break; // Sufficient genuine nearby facilities found in this radius
+      }
+
+      // Secondary engine fallback: Nominatim bounded viewbox query if Overpass had 0 results
+      if (rawCandidates.length === 0) {
+        try {
+          const deltaDeg = (radiusM / 111000);
+          const viewbox = `${userLon - deltaDeg},${userLat + deltaDeg},${userLon + deltaDeg},${userLat - deltaDeg}`;
+          const queryTerms = targetCategory === 'emergency' ? ['hospital', 'clinic'] : ['clinic', 'hospital'];
+          
+          for (const qTerm of queryTerms) {
+            const nUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(qTerm)}&format=json&addressdetails=1&limit=15&viewbox=${viewbox}&bounded=1`;
+            const nRes = await fetch(nUrl, {
+              headers: { 'User-Agent': 'VoxAct-MedicalTriage/1.0 (Hackathon Care Navigation; contact@voxact.org)' },
+              signal
+            });
+            if (nRes.ok) {
+              const nData = await nRes.json();
+              if (Array.isArray(nData)) {
+                for (const item of nData) {
+                  const iLat = parseFloat(item.lat);
+                  const iLon = parseFloat(item.lon);
+                  const distKm = calculateDistanceKm(userLat, userLon, iLat, iLon);
+                  const facName = item.name || (item.display_name ? item.display_name.split(',')[0].trim() : 'Healthcare Facility');
+                  const specInfo = classifyFacilitySpecialty({ name: facName, display_name: item.display_name, careType: item.type });
+                  const isHosp = item.type === 'hospital' || (item.display_name && item.display_name.toLowerCase().includes('hospital'));
+                  
+                  const fac = {
+                    id: `osm_nom_${item.osm_id || Math.random().toString(36).slice(2, 8)}`,
+                    name: facName,
+                    careType: isHosp ? (specInfo.isEmergencyVerified ? 'Emergency & Multi-Specialty Hospital' : 'General / Specialty Hospital') : 'Walk-In Clinic',
+                    category: isHosp ? 'emergency' : targetCategory,
+                    address: item.display_name || `${facName}, Local Area`,
+                    lat: iLat,
+                    lon: iLon,
+                    distanceKm: distKm,
+                    distanceMiles: calculateDistanceMiles(userLat, userLon, iLat, iLon),
+                    distance: formatDistanceMetric(distKm),
+                    emergencyCapable: specInfo.isEmergencyVerified,
+                    capabilities: specInfo.isEmergencyVerified ? ['emergency', 'high', 'medium', 'low'] : ['medium', 'low'],
+                    specialtyInfo: specInfo,
+                    source: 'live',
+                    isFallback: false,
+                    fallbackLabel: null,
+                    openStatus: null,
+                    rating: null,
+                    reviewCount: null,
+                    mapsUrl: `https://www.google.com/maps/dir/?api=1&destination=${iLat},${iLon}`
+                  };
+
+                  if (!rawCandidates.some(existing => existing.name.toLowerCase() === fac.name.toLowerCase() || (Math.abs(existing.lat - fac.lat) < 0.0003 && Math.abs(existing.lon - fac.lon) < 0.0003))) {
+                    rawCandidates.push(fac);
+                  }
+                }
+              }
+            }
+          }
+        } catch (e) {}
+
+        const nomRelevant = rawCandidates.filter(f => isFacilityRelevant(f, userCareNeed));
+        if (nomRelevant.length >= 3) break;
+      }
     }
   }
 
-  // Fallback Handling:
-  // If live search returns no relevant facilities:
-  // - Filter fallback catalog for relevance to user care need
-  // - Clear fallback label if used
-  const allowFallback = options.allowFallback !== undefined
-    ? Boolean(options.allowFallback)
-    : true;
+  // ─── 3. FALLBACK HANDLING (UNIT TESTS / DEMO ONLY) ──────────────────
+  // Live nearby search must NEVER inject synthetic fallbacks unless allowFallback is true AND no live candidates exist
+  const allowFallback = options.allowFallback !== undefined ? Boolean(options.allowFallback) : true;
 
-  if (rawFacilities.length === 0 && allowFallback) {
-    let candidates = [];
+  if (rawCandidates.length === 0 && allowFallback) {
+    let fallbackCandidates = [];
     if (facilityName) {
       const fnLower = facilityName.toLowerCase();
-      candidates = VERIFIED_FACILITIES.filter(f => f.name.toLowerCase().includes(fnLower) || fnLower.includes(f.name.toLowerCase()));
+      fallbackCandidates = VERIFIED_FACILITIES.filter(f => f.name.toLowerCase().includes(fnLower) || fnLower.includes(f.name.toLowerCase()));
     } else {
-      // Relevance filter on fallback catalog too: never suggest eye hospital for fever/general
-      candidates = VERIFIED_FACILITIES.filter(f => isFacilityRelevant(f, userCareNeed));
+      fallbackCandidates = VERIFIED_FACILITIES.filter(f => isFacilityRelevant(f, userCareNeed));
     }
-    rawFacilities = candidates
+    rawCandidates = fallbackCandidates
       .map(fac => {
-        const dist = calculateDistanceMiles(userLat, userLon, fac.lat, fac.lon);
+        const distKm = calculateDistanceKm(userLat, userLon, fac.lat, fac.lon);
+        const distMiles = calculateDistanceMiles(userLat, userLon, fac.lat, fac.lon);
         return {
           ...fac,
-          distanceMiles: dist,
-          distance: formatDistanceMetric(dist),
+          distanceKm: distKm,
+          distanceMiles: distMiles,
+          distance: formatDistanceMetric(distKm),
+          source: 'fallback',
           isFallback: true,
           fallbackLabel: 'Demo fallback — not live nearby data',
           openStatus: null,
           rating: null,
-          reviewCount: null
+          reviewCount: null,
+          mapsUrl: `https://www.google.com/maps/dir/?api=1&destination=${fac.lat},${fac.lon}`
         };
       })
-      .filter(fac => fac.distanceMiles <= 50); // 50-mile proximity guard
+      .filter(fac => fac.distanceMiles <= 50); // 50-mile proximity guard for demo catalogs
   }
 
-  // RELEVANCE + DISTANCE SORTING:
-  // 1. Filter: Ensure all candidates are relevant
-  const eligibleFacilities = rawFacilities.filter(f => isFacilityRelevant(f, userCareNeed));
+  // ─── 4. MEDICAL RELEVANCE FILTERING & STRICT PROXIMITY-FIRST SORT ──
+  const eligibleFacilities = rawCandidates.filter(f => isFacilityRelevant(f, userCareNeed));
 
-  // 2. Sort eligible candidates strictly ascending by distance from user's coordinates
+  // PRIMARY SORT: distanceKm ascending.
+  // Secondary tie-breaker: medical relevance score when facilities are within 150m of each other.
   const ranked = [...eligibleFacilities].sort((a, b) => {
-    return (a.distanceMiles ?? 999) - (b.distanceMiles ?? 999);
+    const distDiff = (a.distanceKm ?? 999) - (b.distanceKm ?? 999);
+    if (Math.abs(distDiff) > 0.15) {
+      return distDiff;
+    }
+    const scoreA = calculateFacilityRelevanceScore(a, userCareNeed);
+    const scoreB = calculateFacilityRelevanceScore(b, userCareNeed);
+    return scoreB - scoreA || distDiff;
   });
 
   const resultLimit = options.limit !== undefined ? Number(options.limit) : 10;
-  const topRecommendations = ranked.slice(0, resultLimit).map((f, index) => {
-    const distMiles = f.distanceMiles ?? 0;
-    const distKm = Math.round(distMiles * 1.60934 * 10) / 10;
-    return {
-      rank: index + 1,
-      id: f.id || `fac_${index + 1}`,
+  const topRecommendations = ranked.slice(0, resultLimit).map((f, index) => ({
+    rank: index + 1,
+    id: f.id || `fac_${index + 1}`,
+    name: f.name,
+    type: f.careType || f.category || 'hospital',
+    careType: f.careType,
+    category: f.category,
+    address: f.address,
+    lat: f.lat,
+    lon: f.lon,
+    distance: f.distance || formatDistanceMetric(f.distanceKm),
+    distanceKm: f.distanceKm,
+    distanceMiles: f.distanceMiles,
+    phone: f.phone || null,
+    emergencyCapable: Boolean(f.emergencyCapable),
+    source: f.isFallback ? 'fallback' : 'live',
+    isFallback: Boolean(f.isFallback),
+    fallbackLabel: f.isFallback ? 'Demo fallback — not live nearby data' : null,
+    openStatus: f.openStatus || null,
+    rating: f.rating || null,
+    reviewCount: f.reviewCount || null,
+    mapsUrl: f.mapsUrl || `https://www.google.com/maps/dir/?api=1&destination=${f.lat},${f.lon}`
+  }));
+
+  // ─── 5. DEVELOPMENT TELEMETRY (Requirement 18) ─────────────────────
+  console.log('[FacilitySearchTelemetry]', {
+    userLocation: { lat: userLat, lon: userLon, locationName },
+    searchRadiusMeters: activeRadiusMeters,
+    rawCandidateCount: rawCandidates.length,
+    candidatesAfterDistanceFilter: rawCandidates.length,
+    candidatesAfterMedicalFilter: eligibleFacilities.length,
+    finalCount: topRecommendations.length,
+    top5: topRecommendations.slice(0, 5).map(f => ({
       name: f.name,
-      type: f.careType || f.category || 'hospital',
-      careType: f.careType,
-      category: f.category,
-      address: f.address,
+      distanceKm: f.distanceKm,
       lat: f.lat,
       lon: f.lon,
-      distance: f.distance || formatDistanceMetric(f.distanceMiles),
-      distanceKm: distKm,
-      distanceMiles: f.distanceMiles,
-      phone: f.phone || null,
-      emergencyCapable: Boolean(f.emergencyCapable),
-      source: f.isFallback ? 'fallback' : 'live',
-      isFallback: Boolean(f.isFallback),
-      fallbackLabel: f.isFallback ? 'Demo fallback — not live nearby data' : null,
-      openStatus: f.openStatus || null,
-      rating: f.rating || null,
-      reviewCount: f.reviewCount || null,
-      mapsUrl: f.mapsUrl || `https://www.google.com/maps/dir/?api=1&destination=${f.lat},${f.lon}`
-    };
+      type: f.careType || f.type
+    }))
   });
 
-  // Build spoken guidance in appropriate language
+  // ─── 6. SPOKEN GUIDANCE ───────────────────────────────────────────
   let spokenSummary = '';
   const top = topRecommendations[0];
   const inIndia = isIndiaRegion(userLat, userLon, locationName);
   const emergencyNum = inIndia ? '108 or 112' : '911';
 
-  // Specific guidance depending on breathing difficulty / emergency vs general
   const isBreathingOrChest = (options.symptoms || []).some(s => {
     const sLower = String(s).toLowerCase();
     return sLower.includes('breath') || sLower.includes('chest') || sLower.includes('மூச்சு') || sLower.includes('நெஞ்சு') || sLower.includes('सांस');
@@ -708,7 +954,7 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
       } else if (language === 'hi') {
         spokenSummary = `${top.name} आपके वर्तमान स्थान से लगभग ${top.distance} दूर है।`;
       } else {
-        spokenSummary = `${top.name} is about ${top.distance} from your current location.`;
+        spokenSummary = `I found ${top.name}, about ${top.distance} from your current location.`;
       }
     } else {
       if (language === 'ta') {
@@ -716,11 +962,10 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
       } else if (language === 'hi') {
         spokenSummary = `मुझे आपके वर्तमान स्थान के पास लाइव खोज में ${facilityName} नहीं मिला।`;
       } else {
-        spokenSummary = `I couldn't find ${facilityName} in the live search near your current location.`;
+        spokenSummary = `No nearby facilities were found from the live search for ${facilityName}.`;
       }
     }
   } else if (isBreathingOrChest && isEmergency) {
-    // Breathing/Chest Emergency Response requirement
     if (top) {
       if (language === 'ta') {
         spokenSummary = `உங்களுக்கு மூச்சுத்திணறல் அல்லது நெஞ்சு வலி இருப்பதால், உடனடியாக அவசர மருத்துவ சிகிச்சை பெற வேண்டும். வரைபடத்தில் மிக அருகில் உள்ள அவசர சிகிச்சை மருத்துவமனையான ${top.name} (${top.distance}) காட்டப்பட்டுள்ளது. உடனடியாக 108 அல்லது 112-ஐ அழைக்கவும்.`;
@@ -731,29 +976,29 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
       }
     } else {
       if (language === 'ta') {
-        spokenSummary = `உங்களுக்கு மூச்சுத்திணறல் இருப்பதால் உடனடியாக அவசர சிகிச்சை பெற வேண்டும். நேரடித் தேடலில் பொருத்தமான மருத்துவமனை கிடைக்கவில்லை. உடனடியாக 108 அல்லது 112-ஐ அழைக்கவும்.`;
+        spokenSummary = `உங்களுக்கு மூச்சுத்திணறல் இருப்பதால் உடனடியாக அவசர சிகிச்சை பெற வேண்டும். நேரடித் தேடலில் பொருத்தமான மருத்துவமனை எதுவும் கிடைக்கவில்லை. உடனடியாக 108 அல்லது 112-ஐ அழைக்கவும்.`;
       } else if (language === 'hi') {
         spokenSummary = `सांस लेने में तकलीफ के कारण तत्काल आपातकालीन सहायता लें। लाइव खोज में कोई उपयुक्त अस्पताल नहीं मिला। तुरंत 112 पर कॉल करें।`;
       } else {
-        spokenSummary = `Because you're having trouble breathing, you should get urgent medical help immediately. I couldn't find a relevant nearby hospital from the live search. Please call ${emergencyNum} immediately.`;
+        spokenSummary = `Because you're having trouble breathing, you should get urgent medical help immediately. No nearby facilities were found from the live search. Please call ${emergencyNum} immediately.`;
       }
     }
   } else if (language === 'ta') {
     if (isEmergency) {
       spokenSummary = top
         ? `அருகில் ${topRecommendations.length} பொது / அவசர மருத்துவமனைகளைக் கண்டறிந்துள்ளேன். இதில் மிக அருகில் இருப்பது ${top.name}, சுமார் ${top.distance} தொலைவில் உள்ளது. அவசர நிலை என்றால் உடனடியாக 108 அல்லது 112-ஐ அழைக்கவும்.`
-        : 'நேரடித் தேடலில் பொருத்தமான மருத்துவமனை எதுவும் கிடைக்கவில்லை. அவசர நிலை என்றால் உடனடியாக 108 அல்லது 112-ஐ அழைக்கவும்.';
+        : 'நேரடித் தேடலில் பொருத்தமான மருத்துவமனை எதுவும் கிடைக்கவில்லை.';
     } else if (topRecommendations.length > 0) {
       const facTypeLabel = userCareNeed === 'eye' ? 'கண் மருத்துவமனைகளை' : (userCareNeed === 'dental' ? 'பல் மருத்துவமனைகளை' : 'பொது மருத்துவமனைகளை');
       spokenSummary = `அருகில் ${topRecommendations.length} ${facTypeLabel} கண்டறிந்துள்ளேன். இதில் மிக அருகில் இருப்பது ${top.name}, சுமார் ${top.distance} தொலைவில் உள்ளது.`;
     } else {
-      spokenSummary = 'நேரடித் தேடலில் உங்கள் அறிகுறிகளுக்குப் பொருத்தமான மருத்துவமனை எதுவும் கிடைக்கவில்லை.';
+      spokenSummary = 'நேரடித் தேடலில் பொருத்தமான மருத்துவமனை எதுவும் கிடைக்கவில்லை.';
     }
   } else if (language === 'hi') {
     if (isEmergency) {
       spokenSummary = top
         ? `मैंने पास में ${topRecommendations.length} सामान्य/आपातकालीन अस्पताल खोजे हैं। सबसे नजदीकी ${top.name} है, जो लगभग ${top.distance} दूर है। गंभीर स्थिति में तुरंत 112 पर कॉल करें।`
-        : 'लाइव खोज से कोई उपयुक्त आपातकालीन अस्पताल नहीं मिला। गंभीर स्थिति में तुरंत 112 पर कॉल करें।';
+        : 'लाइव खोज से कोई उपयुक्त अस्पताल नहीं मिला।';
     } else if (topRecommendations.length > 0) {
       spokenSummary = `मैंने पास में ${topRecommendations.length} उपयुक्त अस्पताल खोजे हैं। सबसे नजदीकी ${top.name} (${top.distance}) है।`;
     } else {
@@ -763,12 +1008,12 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
     if (isEmergency) {
       spokenSummary = top
         ? `I found ${topRecommendations.length} emergency-capable hospitals nearby. The closest is ${top.name}, about ${top.distance} away. If this is life-threatening, please call ${emergencyNum} immediately.`
-        : `I couldn't find a relevant nearby hospital from the live search. In an emergency, please call ${emergencyNum} immediately.`;
+        : `No nearby facilities were found from the live search. In an emergency, please call ${emergencyNum} immediately.`;
     } else if (topRecommendations.length > 0) {
-      const facilityWord = (userCareNeed === 'eye') ? 'eye hospitals' : ((userCareNeed === 'dental') ? 'dental clinics' : 'general hospitals');
+      const facilityWord = (userCareNeed === 'eye') ? 'eye hospitals' : ((userCareNeed === 'dental') ? 'dental clinics' : 'healthcare facilities');
       spokenSummary = `I found ${topRecommendations.length} nearby ${facilityWord}. The closest is ${top.name}, about ${top.distance} away.`;
     } else {
-      spokenSummary = `I couldn't find a relevant nearby hospital from the live search.`;
+      spokenSummary = `No nearby facilities were found from the live search.`;
     }
   }
 
@@ -794,11 +1039,14 @@ module.exports = {
   VERIFIED_FACILITIES,
   searchHealthcareFacilities,
   determineCareCategory,
+  calculateDistanceKm,
   calculateDistanceMiles,
   isIndiaRegion,
   classifyFacilitySpecialty,
   determineUserCareNeed,
   isFacilityRelevant,
-  calculateFacilityRelevanceScore
+  calculateFacilityRelevanceScore,
+  fetchOverpassFacilities,
+  parseOverpassElement,
 };
 
