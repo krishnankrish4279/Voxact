@@ -160,18 +160,39 @@ function classifyUserIntent(userText, context = {}) {
   // ─────────────────────────────────────────────────────────────────
   // 1. EMERGENCY (Safety-first priority)
   // Severe symptoms that must bypass routine self-care:
-  // crushing chest pain, difficulty breathing, fainting, vomiting blood, seizure
+  // shortness of breath, chest pain, fainting, vomiting blood, seizure
   // ─────────────────────────────────────────────────────────────────
+  const isBreathingEmergency = (
+    /\b(shortness of breath|shortness_of_breath|breathless|breathing difficulty|difficulty breathing|can't breathe|cannot breathe|can't breathe properly|cannot breathe properly|trouble breathing|hard to breathe|breathing problem)\b/i.test(lower) ||
+    /மூச்சுத்திணறல்|மூச்சு\s*திணறல்|மூச்சு\s*வாங்குது|மூச்சு\s*விட\s*கஷ்டமா\s*இருக்கு|மூச்சு\s*விடவே\s*முடியல|மூச்சு\s*விட\s*கஷ்டம்/i.test(text) ||
+    /सांस\s*लेने\s*में\s*तकलीफ|सांस\s*फूलना|सांस\s*बिल्कुल\s*नहीं\s*आ\s*रही|सांस\s*नहीं\s*आ\s*रही|दम\s*घुट/i.test(text)
+  );
+
+  const isChestEmergency = (
+    /\b(chest pain|chest pressure|crushing chest pain|chest hurts|pressure radiating|tightness in chest)\b/i.test(lower) ||
+    /நெஞ்சு\s*வலி|மார்பு\s*வலி/i.test(text) ||
+    /सीने\s*में\s*(?:असहनीय\s*)?दर्द/i.test(text)
+  );
+
   const hasEmergencyRedFlags = (
-    /\b(crushing chest pain|chest pressure radiating|cannot breathe|can't breathe|severe shortness of breath|passed out|fainted|loss of consciousness|seizure|coughing up blood|vomiting blood|severe sudden bleeding|stroke symptoms|face drooping)\b/i.test(lower) ||
-    /நெஞ்சு\s*வலி\s*(அதிகமா|கடுமையா|தாங்க\s*முடியல)|மூச்சு\s*விடவே\s*முடியல|மயங்கி\s*விழுந்து|ரத்தம்\s*(கக்குது|வாந்தி)|சுயநினைவு\s*இல்லை/i.test(text) ||
-    /सीने\s*में\s*असहनीय\s*दर्द|सांस\s*बिल्कुल\s*नहीं\s*आ\s*रही|बेहोश\s*हो\s*गया|खून\s*की\s*उल्टी/i.test(text) ||
+    isBreathingEmergency ||
+    isChestEmergency ||
+    /\b(passed out|fainted|loss of consciousness|seizure|coughing up blood|vomiting blood|severe sudden bleeding|severe bleeding|stroke symptoms|face drooping|blue lips|grey lips|blue\/grey lips|severe allergic reaction|anaphylaxis)\b/i.test(lower) ||
+    /மயங்கி\s*விழுந்து|ரத்தம்\s*(கக்குது|வாந்தி)|சுயநினைவு\s*இல்லை|உதடு\s*(நீல|சாம்பல்)/i.test(text) ||
+    /बेहोश\s*हो\s*गया|खून\s*की\s*उल्टी/i.test(text) ||
     // Severe fever with emergency signs
     (/\b(fever|temperature|காய்ச்சல்|बुखार)\b/i.test(lower) && /\b(confusion|hallucinating|stiff neck|seizure|cannot wake|breathing trouble|blue lips)\b/i.test(lower))
   );
 
   if (hasEmergencyRedFlags) {
-    return { intent: INTENTS.EMERGENCY, details: { redFlag: true } };
+    return {
+      intent: INTENTS.EMERGENCY,
+      details: {
+        redFlag: true,
+        isBreathing: isBreathingEmergency,
+        isChest: isChestEmergency,
+      }
+    };
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -285,9 +306,9 @@ function classifyUserIntent(userText, context = {}) {
   // 9. SYMPTOM INFORMATION (stating symptoms or answering questions)
   // ─────────────────────────────────────────────────────────────────
   const hasSymptomKeywords = (
-    /\b(fever|headache|migraine|dizzy|dizziness|nausea|vomit|vomiting|cough|sore\s*throat|chest\s*pain|stomach\s*pain|abdominal|back\s*pain|knee\s*pain|knees|joint\s*pain|rash|weakness|fatigue|temperature|chills|shivering|body\s*pain|hurts|pain)\b/i.test(lower) ||
-    /காய்ச்சல்|தலைவலி|நெஞ்சு\s*வலி|வயிற்று\s*வலி|முழங்கால்\s*வலி|முட்டி\s*வலி|வாந்தி|மயக்கம்|இருமல்|தொண்டை\s*வலி|சோர்வு|உடம்பு\s*வலி|வலிக்குது/i.test(text) ||
-    /बुखार|सिरदर्द|सीने\s*में\s*दर्द|पेट\s*दर्द|घुटने\s*में\s*दर्द|उल्टी|चक्कर|खांसी|गले\s*में\s*खराश|थकान|बदन\s*दर्द/i.test(text) ||
+    /\b(fever|headache|migraine|dizzy|dizziness|nausea|vomit|vomiting|cough|sore\s*throat|chest\s*pain|stomach\s*pain|abdominal|back\s*pain|knee\s*pain|knees|joint\s*pain|rash|weakness|fatigue|temperature|chills|shivering|body\s*pain|hurts|pain|shortness\s*of\s*breath|shortness_of_breath|breathing|breathless|eye\s*pain|vision|eyes?|tooth|teeth|toothache|dental)\b/i.test(lower) ||
+    /காய்ச்சல்|தலைவலி|நெஞ்சு\s*வலி|வயிற்று\s*வலி|முழங்கால்\s*வலி|முட்டி\s*வலி|வாந்தி|மயக்கம்|இருமல்|தொண்டை\s*வலி|சோர்வு|உடம்பு\s*வலி|வலிக்குது|மூச்சுத்திணறல்|மூச்சு\s*வாங்குது|மூச்சு\s*திணறல்|கண்\s*வலி|பல்\s*வலி/i.test(text) ||
+    /बुखार|सिरदर्द|सीने\s*में\s*दर्द|पेट\s*दर्द|घुटने\s*में\s*दर्द|उल्टी|चक्कर|खांसी|गले\s*में\s*खराश|थकान|बदन\s*दर्द|सांस|आँख|आंख|दांत/i.test(text) ||
     // Numerical temperature or age responses (e.g. "101 and 25 years old", "38 degrees", "28 years old")
     /\b(?:10[0-5]|9[7-9])(?:\.[0-9])?\s*(?:degrees|f|c)?\b/i.test(lower) ||
     /\b(?:i\s*am|age\s*is|age)\s*\d{1,3}\b/i.test(lower) ||

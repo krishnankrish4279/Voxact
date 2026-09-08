@@ -60,9 +60,23 @@ const SYMPTOM_CONDITIONS = {
     { condition: 'Poor Posture', confidence: 0.5, urgency: 'low' },
   ],
   'shortness of breath': [
-    { condition: 'Anxiety', confidence: 0.4, urgency: 'medium' },
-    { condition: 'Asthma', confidence: 0.45, urgency: 'medium' },
-    { condition: 'Cardiac Issue', confidence: 0.2, urgency: 'emergency' },
+    { condition: 'Acute Respiratory Distress / Asthma', confidence: 0.85, patternMatchScore: 0.85, urgency: 'emergency' },
+    { condition: 'Cardiac / Respiratory Compromise', confidence: 0.75, patternMatchScore: 0.75, urgency: 'emergency' },
+    { condition: 'Asthma Exacerbation', confidence: 0.65, patternMatchScore: 0.65, urgency: 'high' },
+  ],
+  shortness_of_breath: [
+    { condition: 'Acute Respiratory Distress / Asthma', confidence: 0.85, patternMatchScore: 0.85, urgency: 'emergency' },
+    { condition: 'Cardiac / Respiratory Compromise', confidence: 0.75, patternMatchScore: 0.75, urgency: 'emergency' },
+    { condition: 'Asthma Exacerbation', confidence: 0.65, patternMatchScore: 0.65, urgency: 'high' },
+  ],
+  'eye pain': [
+    { condition: 'Corneal Abrasion / Conjunctivitis', confidence: 0.70, patternMatchScore: 0.70, urgency: 'medium' },
+    { condition: 'Eye Strain / Dry Eye', confidence: 0.55, patternMatchScore: 0.55, urgency: 'low' },
+    { condition: 'Acute Glaucoma / Ocular Emergency', confidence: 0.30, patternMatchScore: 0.30, urgency: 'emergency' },
+  ],
+  toothache: [
+    { condition: 'Dental Caries / Pulpitis', confidence: 0.75, patternMatchScore: 0.75, urgency: 'low' },
+    { condition: 'Dental Abscess', confidence: 0.45, patternMatchScore: 0.45, urgency: 'medium' },
   ],
   rash: [
     { condition: 'Contact Dermatitis', confidence: 0.5, patternMatchScore: 0.5, urgency: 'low' },
@@ -226,8 +240,14 @@ async function analyzeSymptoms(symptoms, signal) {
     });
   }
 
-  // Sort by patternMatchScore/confidence descending
-  results.sort((a, b) => (b.patternMatchScore || b.confidence) - (a.patternMatchScore || a.confidence));
+  // Sort by urgency ('emergency' > 'high' > 'medium' > 'low') then patternMatchScore/confidence descending
+  const urgencyWeight = { emergency: 4, high: 3, medium: 2, low: 1 };
+  results.sort((a, b) => {
+    const uwA = urgencyWeight[a.urgency] || 1;
+    const uwB = urgencyWeight[b.urgency] || 1;
+    if (uwA !== uwB) return uwB - uwA;
+    return (b.patternMatchScore || b.confidence) - (a.patternMatchScore || a.confidence);
+  });
 
   return {
     symptoms: normalizedSymptoms,
@@ -253,8 +273,13 @@ async function calculateUrgency(analysisResult, signal) {
   const safeResult = analysisResult || {};
   const conditions = safeResult.possibleConditions || [];
 
-  // Check for emergency-level conditions
-  const hasEmergency = conditions.some(c => c.urgency === 'emergency' && c.confidence > 0.15);
+  // Check for emergency-level conditions and symptoms
+  const reportedSymptoms = Array.isArray(safeResult.symptoms) ? safeResult.symptoms.map(s => String(s).toLowerCase()) : [];
+  const hasAcuteSymptom = reportedSymptoms.some(s =>
+    s.includes('shortness') || s.includes('breath') || s.includes('chest') || s.includes('மூச்சு') || s.includes('நெஞ்சு') || s.includes('सांस') || s.includes('सीने')
+  );
+
+  const hasEmergency = hasAcuteSymptom || conditions.some(c => (c.urgency === 'emergency' || c.urgency === 'high') && c.confidence > 0.15);
   const hasMedium = conditions.some(c => c.urgency === 'medium' && c.confidence > 0.3);
   const symptomCount = safeResult.symptomCount || conditions.reduce((acc, c) => acc + (c.matchedSymptoms?.length || 0), 0) || 0;
 
@@ -262,8 +287,10 @@ async function calculateUrgency(analysisResult, signal) {
 
   if (hasEmergency) {
     level = 'high';
-    reasoning = 'Some of your symptoms could indicate a condition that needs prompt attention.';
-    timeframe = 'You should be seen within the next one to two hours.';
+    reasoning = hasAcuteSymptom
+      ? 'Shortness of breath or cardiovascular symptoms can be serious and require immediate medical evaluation.'
+      : 'Some of your symptoms could indicate a condition that needs prompt attention.';
+    timeframe = 'You should be evaluated immediately or within the hour.';
   } else if (hasMedium || symptomCount >= 3) {
     level = 'medium';
     reasoning = 'Your symptoms suggest you should see a healthcare provider soon.';

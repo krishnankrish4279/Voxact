@@ -40,7 +40,7 @@ module.exports = async function handler(req, res) {
 
   try {
     const lang = language || 'en';
-    const genId = 'gen_' + Date.now().toString(36);
+    const genId = req.body?.generationId || 'gen_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7);
 
     // ─── Initialize components ─────────────────────────────────────
     const llm = new LLMClient({
@@ -236,7 +236,7 @@ module.exports = async function handler(req, res) {
       let followUpBuffer = '';
       const followUpResult = await llm.streamFollowUp(null, (chunk) => {
         followUpBuffer += chunk;
-        send({ type: 'transcript_chunk', role: 'assistant', text: chunk });
+        send({ type: 'transcript_chunk', role: 'assistant', text: chunk, generationId: genId });
       });
 
       // 6. Synthesize follow-up sentences
@@ -273,7 +273,7 @@ module.exports = async function handler(req, res) {
       // onTextChunk: accumulate sentences
       (chunk) => {
         sentenceBuffer += chunk;
-        send({ type: 'transcript_chunk', role: 'assistant', text: chunk });
+        send({ type: 'transcript_chunk', role: 'assistant', text: chunk, generationId: genId });
 
         // Detect complete sentences
         let sentenceEnd = findSentenceEnd(sentenceBuffer);
@@ -290,7 +290,7 @@ module.exports = async function handler(req, res) {
       async (toolName, args, toolCallId) => {
         // Synthesize any text that was streamed before the tool call
         if (sentenceQueue.length > 0) {
-          send({ type: 'state_change', state: 'speaking' });
+          send({ type: 'state_change', state: 'speaking', generationId: genId });
           for (const s of sentenceQueue) {
             await synthesizeAndSend(s, `seg_${++segmentCounter}`);
           }
@@ -307,28 +307,29 @@ module.exports = async function handler(req, res) {
     }
 
     if (sentenceQueue.length > 0) {
-      send({ type: 'state_change', state: 'speaking' });
+      send({ type: 'state_change', state: 'speaking', generationId: genId });
       for (const s of sentenceQueue) {
         await synthesizeAndSend(s, `seg_${++segmentCounter}`);
       }
     }
 
     if (llm.pendingAction !== pendingAction) {
-      send({ type: 'pending_action_change', pendingAction: llm.pendingAction || null });
+      send({ type: 'pending_action_change', pendingAction: llm.pendingAction || null, generationId: genId });
     }
 
     if (llm.nearbyCareStatus !== nearbyCareStatus) {
-      send({ type: 'nearby_care_status_change', nearbyCareStatus: llm.nearbyCareStatus || 'not_requested' });
+      send({ type: 'nearby_care_status_change', nearbyCareStatus: llm.nearbyCareStatus || 'not_requested', generationId: genId });
     }
 
     // ─── Done ──────────────────────────────────────────────────────
-    send({ type: 'state_change', state: 'listening' });
+    send({ type: 'state_change', state: 'listening', generationId: genId });
     send({
       type: 'done',
       conversationHistory: llm.conversationHistory,
       pendingAction: llm.pendingAction || null,
       nearbyCareStatus: llm.nearbyCareStatus || 'not_requested',
       turnId: turnId || null,
+      generationId: genId,
     });
 
   } catch (err) {

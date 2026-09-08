@@ -1992,8 +1992,13 @@
         if (typeof window !== 'undefined' && window.speechSynthesis) {
           window.speechSynthesis.cancel();
         }
+        if (currentGenerationId) {
+          invalidatedGenerations.add(currentGenerationId);
+        }
+        currentGenerationId = 'gen_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7);
+        currentAssistantBubble = null;
 
-        console.log('[App] Submitting complete user speech (turnId: ' + turnId + '):', finalTextToSubmit);
+        console.log('[App] Submitting complete user speech (turnId: ' + turnId + ', genId: ' + currentGenerationId + '):', finalTextToSubmit);
 
         // Normalize medical speech (Tamil, Hindi, English)
         let normalized = {
@@ -2033,8 +2038,8 @@
         }
 
         if (useHttpTransport) {
-          // HTTP/SSE mode: send via POST /api/chat
-          sendChatHTTP(displayText, { turnId });
+          // HTTP/SSE mode: send via POST /api/chat with generationId
+          sendChatHTTP(displayText, { turnId, generationId: currentGenerationId });
         } else {
           // WebSocket mode: send via WS
           sendMessage({
@@ -2047,13 +2052,17 @@
             pendingAction,
             nearbyCareStatus,
             turnId,
+            generationId: currentGenerationId,
           });
         }
 
+        // Merge symptoms with previously reported symptoms
         const localSymptoms = extractClientSymptoms(displayText);
         if (localSymptoms.length > 0 && symptomTags) {
+          const existingTags = Array.from(symptomTags.querySelectorAll('.symptom-tag')).map(t => t.textContent.replace('• ', '').trim());
+          const mergedList = Array.from(new Set([...existingTags, ...localSymptoms]));
           symptomTags.innerHTML = '';
-          localSymptoms.forEach(s => {
+          mergedList.forEach(s => {
             const tag = document.createElement('span');
             tag.className = 'symptom-tag';
             tag.textContent = '• ' + s;
@@ -2105,17 +2114,25 @@
   const COMMON_SYMPTOMS = [
     'headache', 'dizziness', 'nausea', 'fever', 'chest pain', 'stomach pain',
     'sore throat', 'cough', 'fatigue', 'back pain', 'shortness of breath',
-    'rash', 'vomiting', 'body ache', 'migraine', 'chills', 'weakness', 'diarrhea',
+    'breathless', 'breathing difficulty', 'difficulty breathing', 'trouble breathing', 'hard to breathe',
+    'knee pain', 'rash', 'vomiting', 'body ache', 'migraine', 'chills', 'weakness', 'diarrhea',
     // Tamil clinical terms
-    'தலைவலி', 'காய்ச்சல்', 'மயக்கம்', 'நெஞ்சு வலி', 'வயிற்று வலி', 'இருமல்', 'சளி',
+    'தலைவலி', 'காய்ச்சல்', 'மயக்கம்', 'நெஞ்சு வலி', 'வயிற்று வலி', 'இருமல்', 'சளி', 'மூச்சுத்திணறல்', 'மூச்சு விட கஷ்டமா இருக்கு', 'மூச்சு வாங்குது',
     // Hindi clinical terms
-    'सिरदर्द', 'बुखार', 'चक्कर', 'सीने में दर्द', 'पेट दर्द', 'खांसी', 'उल्टी'
+    'सिरदर्द', 'बुखार', 'चक्कर', 'सीने में दर्द', 'पेट दर्द', 'खांसी', 'उल्टी', 'सांस लेने में तकलीफ', 'सांस फूलना'
   ];
 
   function extractClientSymptoms(text) {
     if (!text) return [];
     const lower = text.toLowerCase();
-    return COMMON_SYMPTOMS.filter(s => lower.includes(s));
+    const matches = COMMON_SYMPTOMS.filter(s => lower.includes(s) || text.includes(s));
+    // Normalize breathing terms to shortness of breath
+    return matches.map(s => {
+      if (['breathless', 'breathing difficulty', 'difficulty breathing', 'trouble breathing', 'hard to breathe', 'மூச்சுத்திணறல்', 'மூச்சு விட கஷ்டமா இருக்கு', 'மூச்சு வாங்குது', 'सांस लेने में तकलीफ', 'सांस फूलना'].includes(s)) {
+        return 'shortness of breath';
+      }
+      return s;
+    });
   }
 
   function startRecognition() {

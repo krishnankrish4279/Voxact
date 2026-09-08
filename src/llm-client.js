@@ -577,6 +577,92 @@ class LLMClient {
   }
 
   /**
+   * Deterministic handler for emergency symptoms (breathing difficulty, chest pain, red flags).
+   * Ensures instant, safe, concise triage guidance without obsolete headache percentages.
+   */
+  async _handleEmergency(lastUserMsg, details, signal, onTextChunk, onToolCall) {
+    const startTime = Date.now();
+    const lang = this.language || 'en';
+    const isBreathing = details?.isBreathing || /\b(shortness of breath|breathless|breathing difficulty|difficulty breathing|trouble breathing|hard to breathe|can't breathe|மூச்சு|सांस)\b/i.test(lastUserMsg);
+    const isChest = details?.isChest || /\b(chest pain|chest tightness|heart|நெஞ்சு|सीने)\b/i.test(lastUserMsg);
+
+    // Collect all symptoms across conversation to merge properly
+    const allUserText = this.conversationHistory
+      .filter(m => m.role === 'user')
+      .map(m => m.content || '')
+      .join(' ')
+      .toLowerCase();
+
+    const mergedSymptoms = [];
+    if (allUserText.includes('headache') || allUserText.includes('தலைவலி') || allUserText.includes('सिरदर्द')) {
+      mergedSymptoms.push('headache');
+    }
+    if (isBreathing) {
+      mergedSymptoms.push('shortness_of_breath');
+    }
+    if (isChest) {
+      mergedSymptoms.push('chest pain');
+    }
+    if (mergedSymptoms.length === 0) {
+      mergedSymptoms.push(isBreathing ? 'shortness_of_breath' : 'chest pain');
+    }
+
+    // Dispatch analyzeSymptoms tool call with merged symptoms
+    const toolCallId = 'call_emerg_' + Math.random().toString(36).substring(2, 9);
+    const toolArgs = { symptoms: mergedSymptoms };
+    const toolCalls = [{
+      id: toolCallId,
+      type: 'function',
+      function: {
+        name: 'analyzeSymptoms',
+        arguments: JSON.stringify(toolArgs)
+      }
+    }];
+    this.addAssistantToolCall(toolCalls, null);
+
+    if (onToolCall && !signal?.aborted) {
+      await onToolCall('analyzeSymptoms', toolArgs, toolCallId);
+    }
+
+    let text = '';
+    if (isBreathing) {
+      if (lang === 'ta') {
+        text = "மூச்சுத்திணறல் சில நேரங்களில் serious-ஆ இருக்கலாம். இப்போ மூச்சு விடவே கஷ்டமா இருந்தா, chest pain, மயக்கம், உதடு நீலமாக/சாம்பல் நிறமாக மாறுதல் இருந்தா உடனே emergency help தேவை. உங்களால் comfortable-ஆ பேச முடிந்தால், இது எப்போ ஆரம்பிச்சது, chest pain இருக்கா என்று சொல்லுங்க.";
+      } else if (lang === 'hi') {
+        text = "सांस लेने में तकलीफ गंभीर हो सकती है। यदि आपको अभी सांस लेने में बहुत कठिनाई हो रही है, सीने में दर्द है, होंठ नीले या धूसर पड़ रहे हैं, चक्कर या बेहोशी आ रही है, तो तुरंत आपातकालीन सेवाओं को कॉल करें। यदि आप आराम से बोल पा रहे हैं, तो बताएं कि यह तकलीफ कब शुरू हुई और क्या सीने में दर्द भी है?";
+      } else {
+        text = "Shortness of breath can be serious. If you're struggling to breathe right now, have chest pain, blue/grey lips, fainting, confusion, or severe worsening, call emergency services now or get emergency help immediately. If you can still speak comfortably, tell me when the breathing problem started and whether you have chest pain.";
+      }
+    } else {
+      if (lang === 'ta') {
+        text = "நெஞ்சு வலி அல்லது இந்த அறிகுறிகள் மிகத் தீவிரமானதாக இருக்கலாம். உடனடி அவசர மருத்துவ உதவி தேவை. தாமதிக்காமல் அவசர உதவி எண் 108 அல்லது 112-ஐ அழைக்கவும்.";
+      } else if (lang === 'hi') {
+        text = "सीने में दर्द या ये लक्षण अत्यंत गंभीर हो सकते हैं। तुरंत आपातकालीन चिकित्सा सहायता की आवश्यकता है। कृपया तुरंत 112 पर कॉल करें।";
+      } else {
+        text = "Chest pain and these symptoms can be a life-threatening medical emergency. Please call emergency services (911 or 108/112) or go to the nearest emergency room immediately.";
+      }
+    }
+
+    const sentences = text.match(/[^.!?।]+[.!?।]+/g) || [text];
+    let fullText = '';
+    for (const s of sentences) {
+      if (signal?.aborted) return { cancelled: true, text: fullText, toolCalls: [] };
+      await new Promise(r => setTimeout(r, 40));
+      fullText += s;
+      onTextChunk(s);
+    }
+
+    this.addAssistantMessage(fullText);
+    return {
+      cancelled: false,
+      text: fullText,
+      toolCalls: [{ id: toolCallId, name: 'analyzeSymptoms', arguments: toolArgs }],
+      firstTokenMs: 40,
+      totalMs: Date.now() - startTime,
+    };
+  }
+
+  /**
    * Stream a chat completion, returning chunks as they arrive.
    * Supports function calling for tools.
    * 
@@ -1027,7 +1113,7 @@ class LLMClient {
       { canonical: 'nausea', triggers: ['nausea', 'nauseous', 'sick to my stomach', 'sick to stomach', 'queasy', 'குமட்டல்', 'जी मिचलाना'] },
       { canonical: 'fever', triggers: ['fever', 'feverish', 'high temperature', 'temperature', 'chills', 'shivering', 'burning up', 'sweats', 'sweating', 'காய்ச்சல்', 'சூடு', 'बुखार', 'तापमान', 'तेज बुखार'] },
       { canonical: 'chest pain', triggers: ['chest pain', 'chest hurts', 'chest tightness', 'chest pressure', 'angina', 'tightness in chest', 'heart hurts', 'நெஞ்சு வலி', 'மார்பு வலி', 'सीने में दर्द', 'छाती में दर्द'] },
-      { canonical: 'shortness of breath', triggers: ['shortness of breath', 'breathless', 'trouble breathing', 'hard to breathe', 'wheezing', 'can\'t breathe', 'gasping', 'மூச்சு திணறல்', 'மூச்சுக்குழல்', 'சாப்பாடு', 'सांस लेने में तकलीफ', 'सांस फूलना'] },
+      { canonical: 'shortness_of_breath', triggers: ['shortness of breath', 'breathless', 'breathing difficulty', 'difficulty breathing', "can't breathe properly", 'trouble breathing', 'hard to breathe', 'breathing problem', 'wheezing', 'can\'t breathe', 'gasping', 'shortness of breath now', 'மூச்சுத்திணறல்', 'மூச்சு திணறல்', 'மூச்சு விட கஷ்டமா இருக்கு', 'மூச்சு வாங்குது', 'மூச்சுக்குழல்', 'சாப்பாடு', 'सांस लेने में तकलीफ', 'सांस फूलना', 'सांस लेने में दिक्कत'] },
       { canonical: 'stomach pain', triggers: ['stomach pain', 'stomach ache', 'stomach hurts', 'belly ache', 'abdominal pain', 'cramps', 'cramping', 'gut hurts', 'tummy ache', 'வயிற்று வலி', 'வயிறு வலி', 'पेट दर्द', 'पेट में दर्द'] },
       { canonical: 'fatigue', triggers: ['fatigue', 'fatigued', 'exhausted', 'exhaustion', 'tired', 'tiredness', 'no energy', 'drained', 'சோர்வு', 'களைப்பு', 'थकान', 'थकावट'] },
       { canonical: 'sore throat', triggers: ['sore throat', 'throat hurts', 'scratchy throat', 'hard to swallow', 'swollen glands', 'தொண்டை வலி', 'கரகரப்பு', 'गले में खराश', 'गले में दर्द'] },
@@ -1271,7 +1357,19 @@ class LLMClient {
     } else if (toolData && toolData.possibleConditions && toolData.possibleConditions.length > 0) {
       const top = toolData.possibleConditions[0];
       const second = toolData.possibleConditions[1];
-      const hasEmergency = toolData.possibleConditions.some(c => c.urgency === 'high' || c.urgency === 'emergency');
+      const hasEmergency = toolData.possibleConditions.some(c => c.urgency === 'high' || c.urgency === 'emergency') ||
+        (toolData.symptoms && toolData.symptoms.some(s => {
+          const sL = String(s).toLowerCase();
+          return sL.includes('breath') || sL.includes('chest') || sL.includes('மூச்சு') || sL.includes('सांस');
+        }));
+      const hasChest = (toolData.symptoms && toolData.symptoms.some(s => {
+        const sL = String(s).toLowerCase();
+        return sL.includes('chest') || sL.includes('நெஞ்சு') || sL.includes('सीने');
+      }));
+      const isBreathingOnly = !hasChest && (toolData.symptoms && toolData.symptoms.some(s => {
+        const sL = String(s).toLowerCase();
+        return sL.includes('breath') || sL.includes('மூச்சு') || sL.includes('सांस');
+      }));
       const isKnee = toolData.symptoms?.some(s => s.toLowerCase().includes('knee'));
       const isVomit = toolData.symptoms?.some(s => s.toLowerCase().includes('vomit'));
 
@@ -1279,9 +1377,18 @@ class LLMClient {
       this.hasExplicitCareRequest = false;
 
       const offerCare = !this.careDeclined && this.nearbyCareStatus !== 'declined' && hasEmergency && !isExplicitCare;
-      const score = top.patternMatchScore ?? Math.round((top.confidence || 0.6) * 100);
+      let score = top.patternMatchScore ?? Math.round((top.confidence || 0.6) * 100);
+      if (score <= 1) score = Math.round(score * 100);
 
-      if (lang === 'ta') {
+      if (isBreathingOnly) {
+        if (lang === 'ta') {
+          responseText = "மூச்சுத்திணறல் சில நேரங்களில் serious-ஆ இருக்கலாம். இப்போ மூச்சு விடவே கஷ்டமா இருந்தா, chest pain, மயக்கம், உதடு நீலமாக/சாம்பல் நிறமாக மாறுதல் இருந்தா உடனே emergency help தேவை. உங்களால் comfortable-ஆ பேச முடிந்தால், இது எப்போ ஆரம்பிச்சது, chest pain இருக்கா என்று சொல்லுங்க.";
+        } else if (lang === 'hi') {
+          responseText = "सांस लेने में तकलीफ गंभीर हो सकती है। यदि आपको अभी सांस लेने में बहुत कठिनाई हो रही है, सीने में दर्द है, होंठ नीले या धूसर पड़ रहे हैं, चक्कर या बेहोशी आ रही है, तो तुरंत आपातकालीन सेवाओं को कॉल करें। यदि आप आराम से बोल पा रहे हैं, तो बताएं कि यह तकलीफ कब शुरू हुई और क्या सीने में दर्द भी है?";
+        } else {
+          responseText = "Shortness of breath can be serious. If you're struggling to breathe right now, have chest pain, blue/grey lips, fainting, confusion, or severe worsening, call emergency services now or get emergency help immediately. If you can still speak comfortably, tell me when the breathing problem started and whether you have chest pain.";
+        }
+      } else if (lang === 'ta') {
         const condTa = TAMIL_CONDITION_NAMES[top.condition] || top.condition;
         if (isExplicitCare) {
           responseText = `உங்கள் அறிகுறிகளை ஆராய்ந்ததில், இது ${condTa} நிலையுடன் ${score}% ஒத்துப்போகிறது. உங்களுக்கு அருகில் உள்ள மருத்துவமனைகளை வரைபடத்தில் தயார் செய்துள்ளேன். தயவுசெய்து அவற்றை மதிப்பாய்வு செய்து பரிசோதனை செய்து கொள்ளவும்.`;
@@ -1323,7 +1430,8 @@ class LLMClient {
         } else if (isVomit) {
           responseText = `Based on your symptoms, the triage analysis points towards ${top.condition}. It is important to stay hydrated with small sips of water or electrolyte solution. Are you able to keep any fluids down, and do you also have a fever?`;
         } else if (second) {
-          const secondScore = second.patternMatchScore ?? Math.round((second.confidence || 0.4) * 100);
+          let secondScore = second.patternMatchScore ?? Math.round((second.confidence || 0.4) * 100);
+          if (secondScore <= 1) secondScore = Math.round(secondScore * 100);
           responseText = `Based on your reported symptoms, the pattern shows a ${score}% match with ${top.condition}, and a ${secondScore}% match with ${second.condition}. Pattern match only — not a clinical diagnosis. In the meantime, rest and stay well-hydrated.`;
         } else {
           responseText = `Based on what you've shared, this looks consistent with ${top.condition}. I suggest resting and drinking plenty of fluids. If things don't improve over the next day or two, please consult with a doctor.`;

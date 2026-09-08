@@ -19,14 +19,35 @@
     },
     {
       canonical: 'மூச்சுத்திணறல்',
+      normalizedCanonical: 'shortness_of_breath',
       category: 'respiratory',
       severity: 'emergency',
       variants: [
         'மூச்சு திணறல்', 'மூச்சுத்திணறலா இருக்கு', 'மூச்சு திணறலா இருக்கு',
         'மூச்சு விட கஷ்டம்', 'மூச்சுவிட கஷ்டம்', 'மூச்சு விட கஷ்டமா இருக்கு',
+        'மூச்சு வாங்குது', 'மூச்சு வாங்கல்',
         'மூச்சு விட முடியல', 'மூச்சுவிட முடியல', 'மூச்சு வாங்க முடியல', 'மூச்சு திணறுது',
         'moochu thinarthal', 'moochu thinaral', 'moochu vida kashtam', 'moochu vida mudiyala',
-        'moochu vaanga mudiyala', 'moochu vida kashtama irukku'
+        'moochu vaanga mudiyala', 'moochu vida kashtama irukku', 'moochu vaangudhu'
+      ]
+    },
+    {
+      canonical: 'கண் வலி',
+      category: 'ophthalmology',
+      severity: 'medium',
+      variants: [
+        'கண் வலிக்குது', 'கண் உறுத்துது', 'கண் எரிச்சல்', 'கண் மங்கலா இருக்கு', 'கண் பார்வை மங்கல்',
+        'கண் பார்வை மங்கலாகுது', 'பார்வை குறைபாடு', 'கண் சிவப்பு', 'கண் வீக்கம்', 'கண் அடிபட்டது',
+        'kan vali', 'kann vali', 'kan erichal', 'kan paarvai mangal'
+      ]
+    },
+    {
+      canonical: 'பல் வலி',
+      category: 'dental',
+      severity: 'low',
+      variants: [
+        'பல்லு வலி', 'பல் வலிக்குது', 'பல்லு நோவு', 'ஈறு வலி', 'ஈறுகளில் ரத்தம்',
+        'pal vali', 'pallu vali', 'eeru vali'
       ]
     },
     {
@@ -135,11 +156,30 @@
     },
     {
       canonical: 'सांस लेने में तकलीफ',
+      normalizedCanonical: 'shortness_of_breath',
       category: 'respiratory',
       severity: 'emergency',
       variants: [
-        'सांस फूलना', 'सांस फूल रही है', 'दम घुट रहा है', 'सांस नहीं आ रही',
+        'सांस फूलना', 'सांस फूल रही है', 'दम घुट रहा है', 'सांस नहीं आ रही', 'सांस लेने में दिक्कत',
         'saans lene me taklif', 'saans phoolna', 'dam ghutna', 'saans nahi aa rahi'
+      ]
+    },
+    {
+      canonical: 'आँखों में दर्द',
+      category: 'ophthalmology',
+      severity: 'medium',
+      variants: [
+        'आंख में दर्द', 'आँख में दर्द', 'धुंधला दिखना', 'आंखें लाल', 'आँख में चोट', 'दृष्टि समस्या',
+        'aankh me dard', 'aankhon me dard', 'dhundhla dikhna'
+      ]
+    },
+    {
+      canonical: 'दांत दर्द',
+      category: 'dental',
+      severity: 'low',
+      variants: [
+        'दांत में दर्द', 'दांतों में दर्द', 'मसूड़ों में दर्द', 'मसूड़ों से खून',
+        'dant dard', 'dant me dard'
       ]
     },
     {
@@ -304,7 +344,36 @@
 
       const EN_DICTIONARY = [
         { canonical: 'chest pain', category: 'cardiovascular', severity: 'emergency', variants: ['chest hurts', 'chest ache', 'pain in chest', 'tightness in chest'] },
-        { canonical: 'shortness of breath', category: 'respiratory', severity: 'emergency', variants: ['hard to breathe', 'cannot breathe', "can't breathe", 'trouble breathing', 'breathless'] },
+        {
+          canonical: 'shortness of breath',
+          normalizedCanonical: 'shortness_of_breath',
+          category: 'respiratory',
+          severity: 'emergency',
+          variants: [
+            'shortness of breath', 'a shortness of breath', 'breathless', 'breathing difficulty', 'difficulty breathing',
+            "can't breathe properly", 'cannot breathe properly', 'trouble breathing', 'hard to breathe',
+            'breathing problem', 'cannot breathe', "can't breathe", 'gasping for air'
+          ]
+        },
+        {
+          canonical: 'eye pain',
+          category: 'ophthalmology',
+          severity: 'medium',
+          variants: [
+            'eye ache', 'eyes hurt', 'eye hurts', 'pain in eye', 'pain in eyes', 'pain in my eye', 'pain in my eyes',
+            'blurred vision', 'blurry vision', 'vision problem', 'vision changes', 'eye injury', 'red eye',
+            'eye redness', 'swollen eye', 'ophthalmology', 'hurting eye', 'eyes are hurting', 'eye is hurting'
+          ]
+        },
+        {
+          canonical: 'toothache',
+          category: 'dental',
+          severity: 'low',
+          variants: [
+            'tooth ache', 'tooth pain', 'teeth hurt', 'teeth ache', 'pain in tooth', 'dental pain',
+            'gum pain', 'bleeding gums', 'tooth problem'
+          ]
+        },
         { canonical: 'headache', category: 'neurological', severity: 'medium', variants: ['head hurts', 'head ache', 'migraine', 'pounding head'] },
         { canonical: 'abdominal pain', category: 'gastrointestinal', severity: 'medium', variants: ['stomach pain', 'stomach ache', 'belly pain', 'tummy ache'] },
         { canonical: 'dizziness', category: 'neurological_cardiac', severity: 'high', variants: ['lightheaded', 'feeling dizzy', 'fainted', 'passed out'] },
@@ -396,8 +465,8 @@
       let name = term.canonical;
       if (term.canonical === 'நெஞ்சு வலி' || term.canonical === 'सीने में दर्द' || term.canonical === 'chest pain') {
         name = 'Chest pain';
-      } else if (term.canonical === 'மூச்சுத்திணறல்' || term.canonical === 'सांस लेने में तकलीफ' || term.canonical === 'shortness of breath') {
-        name = 'Shortness of breath';
+      } else if (term.canonical === 'மூச்சுத்திணறல்' || term.canonical === 'सांस लेने में तकलीफ' || term.canonical === 'shortness of breath' || term.canonical === 'shortness_of_breath') {
+        name = 'shortness_of_breath';
       } else if (term.canonical === 'தலைவலி' || term.canonical === 'सिरदर्द' || term.canonical === 'headache') {
         name = 'Headache';
       } else if (term.canonical === 'வயிற்று வலி' || term.canonical === 'पेट दर्द' || term.canonical === 'abdominal pain') {
@@ -412,13 +481,26 @@
         name = 'Fever';
       } else if (term.canonical === 'மயக்கம்' || term.canonical === 'चक्कर' || term.canonical === 'dizziness') {
         name = 'Dizziness';
+      } else if (term.canonical === 'கண் வலி' || term.canonical === 'आँखों में दर्द' || term.canonical === 'eye pain') {
+        name = 'Eye pain';
+      } else if (term.canonical === 'பல் வலி' || term.canonical === 'दांत दर्द' || term.canonical === 'toothache') {
+        name = 'Toothache';
       }
 
-      if (!symptoms.includes(name)) {
+      if (name === 'shortness_of_breath') {
+        if (!symptoms.includes('shortness_of_breath')) symptoms.push('shortness_of_breath');
+        if (!symptoms.includes('Shortness of breath')) symptoms.push('Shortness of breath');
+      } else if (!symptoms.includes(name)) {
         symptoms.push(name);
       }
     }
 
+    if (/\b(shortness of breath|breathless|breathing difficulty|difficulty breathing|can't breathe|cannot breathe|trouble breathing|hard to breathe|breathing problem)\b/i.test(normLower) ||
+        /(?:மூச்சுத்திணறல்|மூச்சு\s*விட|மூச்சு\s*வாங்குது|மூச்சுதிணறல்|மூச்சு\s*திணறல்)/i.test(rawLower) ||
+        /(?:सांस\s*फूल|सांस\s*लेने\s*में\s*तकलीफ|सांस\s*नहीं\s*आ\s*रही)/i.test(rawLower)) {
+      if (!symptoms.includes('shortness_of_breath')) symptoms.push('shortness_of_breath');
+      if (!symptoms.includes('Shortness of breath')) symptoms.push('Shortness of breath');
+    }
     if ((/\b(knee|knees)\b/i.test(normLower) || /(?:முழங்கால்|முட்டி|muzhang|mutti)/i.test(rawLower) || /(?:முழங்கால்|முட்டி|muzhang|mutti)/i.test(normLower)) &&
         (/\b(pain|hurt|hurts|ache|aches|sore|injury|swelling)\b/i.test(normLower) || /(?:வலி|நோவு|pain|வீக்கம்)/i.test(rawLower) || /(?:வலி|நோவு|pain|வீக்கம்)/i.test(normLower))) {
       if (!symptoms.includes('Knee pain')) symptoms.push('Knee pain');
@@ -428,6 +510,12 @@
     }
     if (/\b(weak|weakness|exhausted|no energy|முடியல)\b/i.test(normLower) || /(?:பலவீனம்|அசதி|முடியல|weak)/i.test(rawLower) || /(?:பலவீனம்|அசதி|முடியல|weak)/i.test(normLower)) {
       if (!symptoms.includes('Weakness')) symptoms.push('Weakness');
+    }
+    if (/\b(eye|eyes|vision)\b/i.test(normLower) && (/\b(pain|hurt|hurts|ache|injury|blur|blurred|red|redness|swelling)\b/i.test(normLower) || /(?:வலி|எரிச்சல்|மங்கல்)/i.test(rawLower))) {
+      if (!symptoms.includes('Eye pain')) symptoms.push('Eye pain');
+    }
+    if (/\b(tooth|teeth|dental|gum)\b/i.test(normLower) && (/\b(pain|hurt|hurts|ache|swelling|bleeding)\b/i.test(normLower) || /(?:வலி|பல்)/i.test(rawLower))) {
+      if (!symptoms.includes('Toothache')) symptoms.push('Toothache');
     }
 
     const filteredSymptoms = symptoms.filter(s => s.toLowerCase() !== 'please');
@@ -447,6 +535,12 @@
     }
     if (/\b(chest|heart|sternum)\b/i.test(normLower) || /(?:நெஞ்சு|மார்பு|nenju|marbu)/i.test(rawLower) || /(?:सीना|सीने|छाती|दिल)/.test(rawLower)) {
       addBodyPart('chest');
+    }
+    if (/\b(eye|eyes|vision)\b/i.test(normLower) || /(?:கண்|பார்வை)/i.test(rawLower) || /(?:आँख|आंख)/.test(rawLower)) {
+      addBodyPart('eye');
+    }
+    if (/\b(tooth|teeth|dental|gum)\b/i.test(normLower) || /(?:பல்|ஈறு)/i.test(rawLower) || /(?:दांत)/.test(rawLower)) {
+      addBodyPart('dental');
     }
     if (/\b(stomach|abdomen|belly|gut|tummy)\b/i.test(normLower) || /(?:வயிறு|வயித்து|vayiru|vayithu)/i.test(rawLower) || /(?:पेट)/.test(rawLower)) {
       addBodyPart('abdomen');
@@ -474,7 +568,7 @@
       }
     };
     checkRedFlag('Chest pain', /\b(chest pain|tightness in chest|pressure in chest)\b|நெஞ்சு\s*வலி|மார்பு\s*வலி|सीने\s*में\s*दर्द/i);
-    checkRedFlag('Shortness of breath', /\b(shortness of breath|trouble breathing|hard to breathe|can't breathe|cannot breathe)\b|மூச்சுத்திணறல்|மூச்சு\s*திணறல்|सांस\s*लेने\s*में\s*तकलीफ/i);
+    checkRedFlag('Shortness of breath', /\b(shortness of breath|shortness_of_breath|trouble breathing|hard to breathe|can't breathe|cannot breathe|breathing difficulty|difficulty breathing|breathless|breathing problem)\b|மூச்சுத்திணறல்|மூச்சு\s*திணறல்|மூச்சு\s*வாங்குது|மூச்சு\s*விட\s*கஷ்டமா\s*இருக்கு|सांस\s*लेने\s*में\s*तकलीफ|सांस\s*फूलना/i);
     checkRedFlag('Loss of consciousness or severe dizziness', /\b(passed out|fainted|loss of consciousness|blackout)\b|மயங்கி|बेहोश/i);
     checkRedFlag('Severe bleeding', /\b(severe bleeding|uncontrolled bleeding|coughing blood|vomiting blood)\b|ரத்தப்போக்கு|இரத்தப்போக்கு|खून\s*बहना/i);
     checkRedFlag('Radiating chest/arm pain', /\b(radiating to (?:left\s+)?arm|jaw pain)\b/i);
