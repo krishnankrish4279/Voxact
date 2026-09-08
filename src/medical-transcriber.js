@@ -85,9 +85,9 @@ const TAMIL_MEDICAL_DICTIONARY = [
       'முழங்கால்வலி', 'முழங்கால் வலி', 'முழங்கால்ல வலி', 'முழங்காலில் வலி', 'முழங்கால்', 'முழங்கால் வலிக்குது',
       'முட்டி வலி', 'முட்டில வலி', 'முட்டில பெயின்', 'முட்டி நோவு', 'முட்டில pain',
       'கால் வலி', 'கால்வலி', 'காலில் வலி', 'கால்ல வலி',
-      'muzhang kaal vali', 'muzhangal vali', 'muzhang kaal', 'muzhangaal',
+      'muzhang kaal vali', 'muzhangal vali', 'muthangal vali', 'muthaangal vali', 'muzhang kaal', 'muzhangaal',
       'mutti vali', 'muttile pain', 'muttila pain', 'mutti pain', 'mutti novu',
-      'knee la romba pain', 'knee pain', 'kaal vali', 'kaalvali'
+      'knee la romba pain', 'knee pain', 'full knee pain', 'kaal vali', 'kaalvali'
     ]
   },
   {
@@ -394,9 +394,9 @@ function normalizeMedicalSpeech(rawTranscript, language = 'en') {
     }
 
     // If "please" was spoken in a medical query without strong contextual correction, prompt for clarification rather than storing "please"
-    if (!hasStrongKneeContext && /\bplease\b/i.test(raw) && /\b(pain|hurt|hurts|ache|swelling|doctor|clinic|help)\b/i.test(raw)) {
+    if (!hasStrongKneeContext && /\bplease\b/i.test(raw) && /\b(pain|hurt|hurts|ache|swelling|doctor|clinic|help|vali)\b/i.test(raw)) {
       isAmbiguous = true;
-      clarificationPrompt = 'Did you mean pain in your knees?';
+      clarificationPrompt = (lang === 'ta' || /[\u0B80-\u0BFF]/.test(raw)) ? 'நீங்க knee-la pain இருக்குன்னு சொல்றீங்களா?' : 'Did you mean pain in your knees?';
     }
 
     const EN_DICTIONARY = [

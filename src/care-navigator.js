@@ -234,6 +234,16 @@ function determineCareCategory(urgencyLevel, preferredCareType = null) {
   return 'primary_care';
 }
 
+function formatDistanceMetric(distMiles) {
+  if (distMiles === null || distMiles === undefined) return '';
+  const distKm = distMiles * 1.60934;
+  if (distKm < 1.0) {
+    const metres = Math.round(distKm * 1000);
+    return `${metres} metres`;
+  }
+  return `${distKm.toFixed(1)} km`;
+}
+
 /**
  * Determine if geographical coordinates or location name refer to India / South Asia region
  */
@@ -355,6 +365,7 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
             const itemLat = parseFloat(item.lat);
             const itemLon = parseFloat(item.lon);
             const dist = calculateDistanceMiles(userLat, userLon, itemLat, itemLon);
+            const distStr = formatDistanceMetric(dist);
             const isHospital = item.type === 'hospital' || (item.display_name && item.display_name.toLowerCase().includes('hospital'));
 
             return {
@@ -366,7 +377,7 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
               lat: itemLat,
               lon: itemLon,
               distanceMiles: dist,
-              distance: `${dist} mi`,
+              distance: distStr,
               emergencyCapable: isHospital,
               capabilities: isHospital ? ['emergency', 'high', 'medium', 'low'] : ['medium', 'low'],
               isFallback: false,
@@ -384,21 +395,20 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
     }
   }
 
-  // Fallback Handling (Requirement C):
-  // - If live search returned 0 valid facilities, do NOT silently inject VERIFIED_FACILITIES.
-  // - Fallback catalog is ONLY used if explicitly allowed (options.allowFallback) or if live network completely failed and allowFallback is not false.
+  // Fallback Handling (Requirement C & Section 10/11):
+  // - If a specific named facility was searched, do NOT silently substitute other facilities!
   // - Any fallback data MUST be clearly labeled: "Demo fallback — not live nearby data".
   const allowFallback = options.allowFallback !== undefined
     ? Boolean(options.allowFallback)
-    : (!liveSearchSucceeded && options.allowFallback !== false);
+    : true;
 
   if (rawFacilities.length === 0 && allowFallback) {
-    let candidates = VERIFIED_FACILITIES;
+    let candidates = [];
     if (facilityName) {
-      const matched = VERIFIED_FACILITIES.filter(f => f.name.toLowerCase().includes(facilityName.toLowerCase()));
-      if (matched.length > 0) {
-        candidates = matched;
-      }
+      const fnLower = facilityName.toLowerCase();
+      candidates = VERIFIED_FACILITIES.filter(f => f.name.toLowerCase().includes(fnLower) || fnLower.includes(f.name.toLowerCase()));
+    } else {
+      candidates = VERIFIED_FACILITIES;
     }
     rawFacilities = candidates
       .map(fac => {
@@ -406,7 +416,7 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
         return {
           ...fac,
           distanceMiles: dist,
-          distance: `${dist} mi`,
+          distance: formatDistanceMetric(dist),
           isFallback: true,
           fallbackLabel: 'Demo fallback — not live nearby data',
           openStatus: null,
@@ -417,20 +427,9 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
       .filter(fac => fac.distanceMiles <= 50); // 50-mile proximity guard
   }
 
-  // NEAREST FACILITY FIRST (Requirement E & G):
-  // Sort candidate facilities by clinical appropriateness then actual distance (nearest first).
-  // Real distance calculated from userLat/userLon -> facilityLat/facilityLon.
+  // NEAREST FACILITY FIRST (Requirement E & G / Section 11):
+  // Sort candidate facilities strictly ascending by distance from user's CURRENT GPS coordinates.
   const ranked = [...rawFacilities].sort((a, b) => {
-    if (isEmergency) {
-      const aEmerg = a.emergencyCapable ? 1 : 0;
-      const bEmerg = b.emergencyCapable ? 1 : 0;
-      if (aEmerg !== bEmerg) return bEmerg - aEmerg;
-    } else if (urgencyLevel === 'low') {
-      const aNonEmerg = !a.emergencyCapable ? 1 : 0;
-      const bNonEmerg = !b.emergencyCapable ? 1 : 0;
-      if (aNonEmerg !== bNonEmerg) return bNonEmerg - aNonEmerg;
-    }
-    // Primary distance sort: nearest first
     return (a.distanceMiles ?? 999) - (b.distanceMiles ?? 999);
   });
 
@@ -443,7 +442,7 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
     address: f.address,
     lat: f.lat,
     lon: f.lon,
-    distance: f.distance,
+    distance: f.distance || formatDistanceMetric(f.distanceMiles),
     distanceMiles: f.distanceMiles,
     phone: f.phone || null,
     emergencyCapable: Boolean(f.emergencyCapable),
@@ -458,37 +457,55 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
   // Build spoken guidance in appropriate language
   let spokenSummary = '';
   const top = topRecommendations[0];
+  const inIndia = isIndiaRegion(userLat, userLon, locationName);
+  const emergencyNum = inIndia ? '108 or 112' : '911';
 
-  if (language === 'ta') {
+  if (facilityName) {
+    if (top) {
+      if (language === 'ta') {
+        spokenSummary = `${top.name} உங்கள் தற்போதைய இருப்பிடத்திலிருந்து சுமார் ${top.distance} தொலைவில் உள்ளது.`;
+      } else if (language === 'hi') {
+        spokenSummary = `${top.name} आपके वर्तमान स्थान से लगभग ${top.distance} दूर है।`;
+      } else {
+        spokenSummary = `${top.name} is about ${top.distance} from your current location.`;
+      }
+    } else {
+      if (language === 'ta') {
+        spokenSummary = `உங்கள் தற்போதைய இருப்பிடத்திற்கு அருகில் நேரடித் தேடலில் ${facilityName} கிடைக்கவில்லை.`;
+      } else if (language === 'hi') {
+        spokenSummary = `मुझे आपके वर्तमान स्थान के पास लाइव खोज में ${facilityName} नहीं मिला।`;
+      } else {
+        spokenSummary = `I couldn't find ${facilityName} in the live search near your current location.`;
+      }
+    }
+  } else if (language === 'ta') {
     if (isEmergency) {
       spokenSummary = top
-        ? `அவசர மருத்துவ வழிகாட்டல்: உங்கள் அறிகுறிகளுக்கு உடனடி சிகிச்சை தேவைப்படலாம். அருகில் உள்ள அவசர சிகிச்சை மையம் ${top.name}. அவசர நிலை என்றால் உடனடியாக 108 அல்லது 112-ஐ அழைக்கவும்.`
+        ? `அருகில் ${topRecommendations.length} மருத்துவமனைகளைக் கண்டறிந்துள்ளேன். இதில் மிக அருகில் இருப்பது ${top.name}, சுமார் ${top.distance} தொலைவில் உள்ளது. அவசர நிலை என்றால் உடனடியாக 108 அல்லது 112-ஐ அழைக்கவும்.`
         : 'அவசர மருத்துவ வழிகாட்டல்: உங்கள் அறிகுறிகளுக்கு உடனடி சிகிச்சை தேவைப்படலாம். உடனடியாக 108 அல்லது 112-ஐ அழைக்கவும்.';
     } else if (topRecommendations.length > 0) {
-      spokenSummary = `உங்கள் அறிகுறிகளுக்கு ஏற்ற ${topRecommendations.length} சிகிச்சை மையங்களை வரைபடத்தில் கண்டறிந்துள்ளேன். இதில் மிக அருகில் இருப்பது ${top ? top.name : ''} (${top ? top.distance : ''}). வரைபடத்தில் விவரங்களைப் பார்க்கலாம்.`;
+      spokenSummary = `அருகில் ${topRecommendations.length} சிகிச்சை மையங்களை வரைபடத்தில் கண்டறிந்துள்ளேன். இதில் மிக அருகில் இருப்பது ${top.name}, சுமார் ${top.distance} தொலைவில் உள்ளது.`;
     } else {
       spokenSummary = 'நேரடித் தேடலில் அருகில் சிகிச்சை மையங்கள் எதுவும் கிடைக்கவில்லை. அவசர நிலை என்றால் தயவுசெய்து உடனடியாக 108 அல்லது 112 என்ற எண்ணை அழைக்கவும்.';
     }
   } else if (language === 'hi') {
     if (isEmergency) {
       spokenSummary = top
-        ? `आपातकालीन मार्गदर्शन: आपके लक्षणों को तुरंत चिकित्सा देखभाल की आवश्यकता हो सकती है। सबसे नजदीकी आपातकालीन केंद्र ${top.name} है। गंभीर आपात स्थिति में तुरंत 112 पर कॉल करें।`
+        ? `मैंने पास में ${topRecommendations.length} अस्पताल खोजे हैं। सबसे नजदीकी ${top.name} है, जो लगभग ${top.distance} दूर है। गंभीर आपात स्थिति में तुरंत 112 पर कॉल करें।`
         : 'आपातकालीन मार्गदर्शन: आपके लक्षणों को तुरंत चिकित्सा देखभाल की आवश्यकता हो सकती है। कृपया तुरंत 112 पर कॉल करें।';
     } else if (topRecommendations.length > 0) {
-      spokenSummary = `मैंने आपकी स्थिति के लिए ${topRecommendations.length} उपयुक्त स्वास्थ्य केंद्र खोजे हैं। सबसे नजदीकी विकल्प ${top ? top.name : ''} (${top ? top.distance : ''}) है। आप मानचित्र पर विवरण देख सकते हैं।`;
+      spokenSummary = `मैंने पास में ${topRecommendations.length} स्वास्थ्य केंद्र खोजे हैं। सबसे नजदीकी विकल्प ${top.name} (${top.distance}) है।`;
     } else {
       spokenSummary = 'लाइव खोज से पास में कोई स्वास्थ्य केंद्र नहीं मिला। आपात स्थिति में तुरंत 112 पर कॉल करें।';
     }
   } else {
-    const inIndia = isIndiaRegion(userLat, userLon, locationName);
-    const emergencyNum = inIndia ? '108 or 112' : '911';
-
     if (isEmergency) {
       spokenSummary = top
-        ? `Emergency guidance: Based on your reported symptoms, prompt evaluation is recommended. The closest emergency-capable facility is ${top.name}. If this is life-threatening, please call ${emergencyNum} immediately.`
+        ? `I found ${topRecommendations.length} hospitals nearby. The closest is ${top.name}, about ${top.distance} away. If this is life-threatening, please call ${emergencyNum} immediately.`
         : `Emergency guidance: Based on your reported symptoms, prompt evaluation is recommended. Please call ${emergencyNum} immediately or go to the nearest emergency room.`;
     } else if (topRecommendations.length > 0) {
-      spokenSummary = `I've found ${topRecommendations.length} recommended care options based on your symptoms and urgency level. The closest option is ${top ? top.name : 'a local clinic'} about ${top ? top.distance : 'nearby'}. I've placed them on the map for you.`;
+      const facilityWord = (targetCategory === 'emergency') ? 'hospitals' : 'clinics';
+      spokenSummary = `I found ${topRecommendations.length} ${facilityWord} nearby. The closest is ${top.name}, about ${top.distance} away.`;
     } else {
       spokenSummary = `No nearby facilities found from the live search. In an emergency, please call ${emergencyNum} immediately.`;
     }
@@ -496,6 +513,9 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
 
   const inIndiaForGuidance = isIndiaRegion(userLat, userLon, locationName);
   const regionalEmergencyNum = (inIndiaForGuidance || language === 'ta') ? '108 or 112' : (language === 'hi' ? '112' : '911');
+  const emergencyGuidance = top
+    ? `Based on your reported symptoms, prompt evaluation is recommended. The closest emergency-capable facility is ${top.name}. If this is life-threatening, please call ${regionalEmergencyNum} immediately.`
+    : `Based on your reported symptoms, prompt evaluation is recommended. If this is life-threatening, please call ${regionalEmergencyNum} immediately.`;
 
   return {
     isEmergency,

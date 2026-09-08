@@ -25,6 +25,7 @@ const FillerManager = require('./filler-manager');
 const LatencyTracker = require('./latency-tracker');
 const { normalizeMedicalSpeech } = require('./medical-transcriber');
 const { TOOL_FUNCTIONS } = require('./tools');
+const { classifyUserIntent, INTENTS } = require('./intent-router');
 
 // States
 const STATE = {
@@ -485,9 +486,22 @@ class Orchestrator extends EventEmitter {
       medicalTerms: meta.detectedMedicalTerms || [],
     });
 
-    // Proactively extract and evaluate symptoms to update Live Clinical Assessment Card immediately
-    const detected = this._extractSymptoms(text);
-    if (detected.length > 0) {
+    // Classify user intent
+    const previousAssistantMsg = [...this.llm.conversationHistory].reverse().find(m => m.role === 'assistant' && m.content)?.content || '';
+    const { intent } = classifyUserIntent(text, {
+      previousAssistantMsg,
+      pendingAction: this.llm.pendingAction,
+      nearbyCareStatus: this.nearbyCareStatus,
+    });
+
+    // Proactively extract and evaluate symptoms to update Live Clinical Assessment Card immediately,
+    // but ONLY when the intent is symptom_information or symptom_triage, and NOT for fever alone,
+    // medicine requests, self-care requests, or facility declines/accepts.
+    const isSymptomIntent = intent === INTENTS.SYMPTOM_INFORMATION || intent === INTENTS.SYMPTOM_TRIAGE;
+    const detected = isSymptomIntent ? this._extractSymptoms(text) : [];
+    const isOnlyFever = detected.length === 1 && detected[0].toLowerCase() === 'fever';
+
+    if (detected.length > 0 && !isOnlyFever) {
       (async () => {
         try {
           const analysis = await TOOL_FUNCTIONS['analyzeSymptoms'](detected, signal);
@@ -524,6 +538,20 @@ class Orchestrator extends EventEmitter {
           // ignore aborted or background errors
         }
       })();
+    } else if (isOnlyFever) {
+      this.sendToClient({
+        type: 'triage_update',
+        toolName: 'clinical_bundle',
+        data: {
+          symptoms: ['fever'],
+          possibleConditions: [],
+          isOnlyFever: true,
+          urgency: { urgencyLevel: 'low', reason: 'Fever reported alone, awaiting clarifying details' },
+          clinics: [],
+          careNavigation: null,
+        },
+        generationId: genId,
+      });
     }
 
     // Stream LLM completion

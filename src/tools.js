@@ -172,6 +172,25 @@ async function analyzeSymptoms(symptoms, signal) {
   const results = [];
   const normalizedSymptoms = symptomList.map(s => String(s).toLowerCase().trim());
 
+  // Fever alone is non-specific and does not justify a premature Flu diagnosis or differential percentages
+  const isOnlyFever = normalizedSymptoms.length === 1 && (
+    normalizedSymptoms[0] === 'fever' ||
+    normalizedSymptoms[0] === 'காய்ச்சல்' ||
+    normalizedSymptoms[0] === 'बुखार'
+  );
+
+  if (isOnlyFever) {
+    return {
+      symptoms: normalizedSymptoms,
+      symptomCount: 1,
+      possibleConditions: [],
+      isOnlyFever: true,
+      timestamp: new Date().toISOString(),
+      notice: 'Fever can occur with several different infections and conditions. Additional symptom details are required before evaluating differential patterns.',
+      disclaimer: 'This is a synthetic analysis for demonstration purposes only. Not medical advice.',
+    };
+  }
+
   for (const symptom of normalizedSymptoms) {
     // Find exact or partial matches
     for (const [key, conditions] of Object.entries(SYMPTOM_CONDITIONS)) {
