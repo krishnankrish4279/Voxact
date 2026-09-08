@@ -19,7 +19,19 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { text, conversationHistory, language, location, pendingAction, nearbyCareStatus, turnId } = req.body || {};
+  const {
+    text,
+    conversationHistory,
+    language,
+    location,
+    pendingAction,
+    nearbyCareStatus,
+    turnId,
+    accumulatedSymptoms,
+    latestFacilityResults,
+    selectedFacility,
+    caseContext,
+  } = req.body || {};
 
   if (!text || !text.trim()) {
     return res.status(400).json({ error: 'No text provided' });
@@ -47,7 +59,11 @@ module.exports = async function handler(req, res) {
       language: lang,
       pendingAction: pendingAction || null,
       nearbyCareStatus: nearbyCareStatus || 'not_requested',
-      location: location || null
+      location: location || null,
+      accumulatedSymptoms: accumulatedSymptoms || [],
+      latestFacilityResults: latestFacilityResults || [],
+      selectedFacility: selectedFacility || null,
+      caseContext: caseContext || null,
     });
     const rime = new RimeClient({ language: lang });
     rime.useWebSocket = false; // Force HTTP-only for serverless
@@ -179,6 +195,14 @@ module.exports = async function handler(req, res) {
           }, null);
         } else if (toolName === 'checkAvailability') {
           toolResult = await toolFn(args?.clinicId || args?.clinic_id || 'clinic_001', null);
+        } else if (toolName === 'focusMap') {
+          const fac = args?.facility || (llm.latestFacilityResults && llm.latestFacilityResults[args?.index || 0]);
+          if (fac) llm.selectedFacility = fac;
+          toolResult = await toolFn({ ...args, facility: fac }, null);
+        } else if (toolName === 'getDirections') {
+          const fac = args?.facility || llm.selectedFacility || (llm.latestFacilityResults && llm.latestFacilityResults[0]);
+          if (fac) llm.selectedFacility = fac;
+          toolResult = await toolFn({ ...args, facility: fac }, null);
         }
       } catch (toolErr) {
         console.error(`[api/chat] Tool execution error (${toolName}):`, toolErr.message);
@@ -187,7 +211,35 @@ module.exports = async function handler(req, res) {
 
       // 3. Send triage/navigation update to client
       if (toolName === 'findNearbyCareFacilities') {
+        if (toolResult && Array.isArray(toolResult.facilities)) {
+          llm.latestFacilityResults = toolResult.facilities;
+        }
         send({ type: 'care_navigation_update', toolName, data: toolResult, generationId: genId });
+      } else if (toolName === 'focusMap') {
+        const fac = toolResult.facility || llm.selectedFacility;
+        send({
+          type: 'map_focus',
+          facility: fac,
+          index: args?.index ?? 0,
+          lat: toolResult.lat ?? fac?.lat,
+          lon: toolResult.lon ?? fac?.lon,
+          zoom: toolResult.zoom ?? 15,
+          generationId: genId,
+        });
+        send({
+          type: 'facility_selected',
+          facility: fac,
+          index: args?.index ?? 0,
+          generationId: genId,
+        });
+      } else if (toolName === 'getDirections') {
+        const fac = toolResult.facility || llm.selectedFacility;
+        send({
+          type: 'directions_open',
+          facility: fac,
+          mapsUrl: toolResult.mapsUrl,
+          generationId: genId,
+        });
       } else {
         send({ type: 'triage_update', toolName, data: toolResult, generationId: genId });
       }
@@ -328,6 +380,9 @@ module.exports = async function handler(req, res) {
       conversationHistory: llm.conversationHistory,
       pendingAction: llm.pendingAction || null,
       nearbyCareStatus: llm.nearbyCareStatus || 'not_requested',
+      accumulatedSymptoms: llm.accumulatedSymptoms || [],
+      latestFacilityResults: llm.latestFacilityResults || [],
+      selectedFacility: llm.selectedFacility || null,
       turnId: turnId || null,
       generationId: genId,
     });

@@ -882,6 +882,42 @@
     }
   }
 
+  function selectFacilityByIndex(idx, options = {}) {
+    if (!Array.isArray(latestCareFacilities) || latestCareFacilities.length === 0) {
+      console.warn('[App] selectFacilityByIndex called but no facilities loaded');
+      return;
+    }
+    const safeIdx = Math.max(0, Math.min(idx, latestCareFacilities.length - 1));
+    const fac = latestCareFacilities[safeIdx];
+    if (!fac) return;
+
+    // Highlight card in DOM
+    const cards = document.querySelectorAll('.facility-card');
+    cards.forEach(c => c.classList.remove('active'));
+    const targetCard = cards[safeIdx];
+    if (targetCard) {
+      targetCard.classList.add('active');
+      targetCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    // Update map view and open popup
+    if (careMapInstance && fac.lat && fac.lon) {
+      const zoom = options.zoom || 15;
+      careMapInstance.setView([fac.lat, fac.lon], zoom);
+      if (facilityMarkers[safeIdx]) {
+        facilityMarkers[safeIdx].openPopup();
+      }
+    }
+
+    console.log(`[App] Selected facility index ${safeIdx}: ${fac.name}`);
+  }
+
+  function focusCareMap(lat, lon, zoom = 15) {
+    if (careMapInstance && lat && lon) {
+      careMapInstance.setView([lat, lon], zoom);
+    }
+  }
+
   // ─── Initialize ────────────────────────────────────────────────
 
   function init() {
@@ -1119,6 +1155,19 @@
         if (pendingAction || nearbyCareStatus === 'pending') {
           nearbyCareStatus = 'accepted';
           pendingAction = null;
+        }
+      }
+
+      const lowerText = displayText.toLowerCase().trim();
+      if (/\b(?:share\s+(?:the\s+)?location\s+in\s+map|share\s+location|show\s+in\s+map|open\s+map|show\s+map)\b/i.test(lowerText)) {
+        if (latestCareFacilities.length > 0) {
+          selectFacilityByIndex(0, { zoom: 15 });
+        }
+      } else if (/\b(?:share|show|put|select|take\s+me\s+to|navigate\s+to|zoom\s+to|focus\s+on)?\s*(?:the\s+)?(?:facility\s+|hospital\s+|clinic\s+|option\s+)?(?:number|#|no\.?)?\s*(one|two|three|four|five|1|2|3|4|5|first|second|third|fourth|fifth)\b/i.test(lowerText)) {
+        const numMap = { 'one': 0, '1': 0, 'first': 0, 'two': 1, '2': 1, 'second': 1, 'three': 2, '3': 2, 'third': 2, 'four': 3, '4': 3, 'fourth': 3, 'five': 4, '5': 4, 'fifth': 4 };
+        const m = lowerText.match(/\b(?:number|#|no\.?)?\s*(one|two|three|four|five|1|2|3|4|5|first|second|third|fourth|fifth)\b/i);
+        if (m && numMap[m[1]] !== undefined) {
+          selectFacilityByIndex(numMap[m[1]], { zoom: 15 });
         }
       }
 
@@ -1717,6 +1766,28 @@
         renderCareFacilities(navData.facilities || message.facilities, navData.urgencyLevel || message.urgencyLevel, navData.userLocation);
         break;
 
+      case 'facility_selected':
+        const selIdx = message.index !== undefined ? message.index : 0;
+        selectFacilityByIndex(selIdx, { zoom: 15 });
+        break;
+
+      case 'map_focus':
+        if (message.lat && message.lon) {
+          focusCareMap(message.lat, message.lon, message.zoom || 15);
+        }
+        if (message.index !== undefined) {
+          selectFacilityByIndex(message.index, { zoom: message.zoom || 15 });
+        }
+        break;
+
+      case 'directions_open':
+        if (message.mapsUrl && typeof window !== 'undefined') {
+          try {
+            window.open(message.mapsUrl, '_blank', 'noopener,noreferrer');
+          } catch (e) {}
+        }
+        break;
+
       case 'filler_event':
         handleFillerEvent(message);
         break;
@@ -2034,6 +2105,19 @@
           if (pendingAction || nearbyCareStatus === 'pending') {
             nearbyCareStatus = 'accepted';
             pendingAction = null;
+          }
+        }
+
+        const lowerText = displayText.toLowerCase().trim();
+        if (/\b(?:share\s+(?:the\s+)?location\s+in\s+map|share\s+location|show\s+in\s+map|open\s+map|show\s+map)\b/i.test(lowerText)) {
+          if (latestCareFacilities.length > 0) {
+            selectFacilityByIndex(0, { zoom: 15 });
+          }
+        } else if (/\b(?:share|show|put|select|take\s+me\s+to|navigate\s+to|zoom\s+to|focus\s+on)?\s*(?:the\s+)?(?:facility\s+|hospital\s+|clinic\s+|option\s+)?(?:number|#|no\.?)?\s*(one|two|three|four|five|1|2|3|4|5|first|second|third|fourth|fifth)\b/i.test(lowerText)) {
+          const numMap = { 'one': 0, '1': 0, 'first': 0, 'two': 1, '2': 1, 'second': 1, 'three': 2, '3': 2, 'third': 2, 'four': 3, '4': 3, 'fourth': 3, 'five': 4, '5': 4, 'fifth': 4 };
+          const m = lowerText.match(/\b(?:number|#|no\.?)?\s*(one|two|three|four|five|1|2|3|4|5|first|second|third|fourth|fifth)\b/i);
+          if (m && numMap[m[1]] !== undefined) {
+            selectFacilityByIndex(numMap[m[1]], { zoom: 15 });
           }
         }
 

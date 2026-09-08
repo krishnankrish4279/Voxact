@@ -145,6 +145,23 @@ class LLMClient {
     this.nearbyCareStatus = config.nearbyCareStatus || (this.pendingAction ? 'pending' : 'not_requested');
     this.location = config.location || null;
     this.careDeclined = config.careDeclined || (this.nearbyCareStatus === 'declined');
+    this.latestFacilityResults = config.latestFacilityResults || [];
+    this.selectedFacility = config.selectedFacility || null;
+    this.accumulatedSymptoms = config.accumulatedSymptoms || [];
+    this.conversationState = config.conversationState || 'intake';
+    this.caseContext = config.caseContext || {
+      symptoms: [],
+      rawTranscripts: [],
+      normalizedSymptoms: [],
+      triageLevel: null,
+      differential: [],
+      careRecommendation: null,
+      careDeclined: this.careDeclined,
+      latestFacilityResults: this.latestFacilityResults,
+      selectedFacility: this.selectedFacility,
+      userLocation: this.location,
+      conversationGeneration: null,
+    };
     this.client = null;
     if (this.isConfigured()) {
       const opts = { apiKey: this.apiKey };
@@ -215,6 +232,29 @@ class LLMClient {
    * Add a tool call result to the conversation history
    */
   addToolResult(toolCallId, toolName, result) {
+    if (toolName === 'findNearbyCareFacilities' && result && Array.isArray(result.facilities)) {
+      this.latestFacilityResults = result.facilities;
+      this.conversationState = 'facilities_ready';
+      if (this.caseContext) {
+        this.caseContext.latestFacilityResults = result.facilities;
+      }
+    }
+    if (toolName === 'analyzeSymptoms' && result && Array.isArray(result.symptoms)) {
+      for (const s of result.symptoms) {
+        if (!this.accumulatedSymptoms.includes(s)) {
+          this.accumulatedSymptoms.push(s);
+        }
+      }
+      if (this.caseContext) {
+        this.caseContext.symptoms = [...this.accumulatedSymptoms];
+        this.caseContext.differential = result.possibleConditions || [];
+      }
+    }
+    if (toolName === 'calculateUrgency' && result && result.urgencyLevel) {
+      if (this.caseContext) {
+        this.caseContext.triageLevel = result.urgencyLevel;
+      }
+    }
     this.conversationHistory.push({
       role: 'tool',
       tool_call_id: toolCallId,
@@ -306,13 +346,19 @@ class LLMClient {
     this.pendingAction = null;
     this.nearbyCareStatus = 'declined';
     this.careDeclined = true;
+    this.conversationState = 'care_declined';
+    if (this.caseContext) {
+      this.caseContext.careDeclined = true;
+      this.caseContext.careRecommendation = 'declined';
+    }
+
     let responseText = '';
     if (lang === 'ta') {
-      responseText = "சரி, புரிந்து கொண்டேன். நான் கிளினிக்குகளையோ மருத்துவமனைகளையோ தேட மாட்டேன். உங்கள் அறிகுறிகளைக் கவனிப்பதில் கவனம் செலுத்துவோம்.";
+      responseText = "சரி. நீங்கள் கேட்கும் வரை நான் மருத்துவமனைகளைத் தேட மாட்டேன். உங்கள் அறிகுறிகளைக் கவனிப்பதில் கவனம் செலுத்துவோம்.";
     } else if (lang === 'hi') {
-      responseText = "ठीक है, समझ गया। मैं अस्पतालों या क्लिनिकों की तलाश नहीं करूँगा। आइए आपके लक्षणों के प्रबंधन पर ध्यान दें।";
+      responseText = "ठीक है। जब तक आप नहीं कहेंगे, मैं किसी अस्पताल की तलाश नहीं करूँगा। आइए आपके लक्षणों के प्रबंधन पर ध्यान दें।";
     } else {
-      responseText = "Understood. I will not search for clinics or hospitals. Let's focus on managing your symptoms. Please let me know if you need help with anything else.";
+      responseText = "Understood. I will not search for nearby facilities. Let's focus on managing your symptoms. Please let me know if you need help with anything else.";
     }
 
     const sentences = responseText.match(/[^.!?।]+[.!?।]+/g) || [responseText];
@@ -342,18 +388,295 @@ class LLMClient {
   }
 
   /**
+   * Handler for user saying wait / hold on
+   */
+  async _handleWaitInterruption(signal, onTextChunk) {
+    const lang = this.language || 'en';
+    let text = "I'm listening, take your time.";
+    if (lang === 'ta') text = "நான் கேட்கிறேன், பொறுமையாக சொல்லுங்கள்.";
+    else if (lang === 'hi') text = "मैं सुन रहा हूँ, आराम से बताइए।";
+
+    onTextChunk(text);
+    this.addAssistantMessage(text);
+    return {
+      cancelled: false,
+      text,
+      toolCalls: [],
+      firstTokenMs: 20,
+      totalMs: 20,
+    };
+  }
+
+  /**
+   * Handler for selecting a specific facility card / number (e.g. "show number one", "share number one", "put number one on map")
+   */
+  async _handleFacilitySelection(lastUserMsg, details, signal, onTextChunk, onToolCall) {
+    const startTime = Date.now();
+    const lang = this.language || 'en';
+    const index = details?.facilityIndex ?? 0;
+
+    let facilities = this.latestFacilityResults || [];
+    if (facilities.length === 0) {
+      for (const msg of [...this.conversationHistory].reverse()) {
+        if (msg.role === 'tool') {
+          try {
+            const data = JSON.parse(msg.content);
+            if (Array.isArray(data.facilities) && data.facilities.length > 0) {
+              facilities = data.facilities;
+              this.latestFacilityResults = facilities;
+              break;
+            }
+          } catch (e) {}
+        }
+      }
+    }
+
+    if (facilities.length === 0) {
+      return this._handleHospitalSearch(lastUserMsg, signal, onTextChunk, onToolCall);
+    }
+
+    const facility = facilities[index] || facilities[0];
+    this.selectedFacility = facility;
+    this.conversationState = 'facility_selected';
+    if (this.caseContext) {
+      this.caseContext.selectedFacility = facility;
+    }
+
+    const toolCallId = 'call_select_' + Math.random().toString(36).substring(2, 9);
+    const selectArgs = {
+      facility,
+      index,
+      id: facility.id,
+      name: facility.name,
+      lat: facility.lat,
+      lon: facility.lon,
+      distance: facility.distance || (facility.distanceKm ? `${facility.distanceKm} km` : 'Nearby'),
+      mapsUrl: facility.mapsUrl
+    };
+
+    if (onToolCall && !signal?.aborted) {
+      await onToolCall('selectFacility', selectArgs, toolCallId);
+    }
+
+    let responseText = '';
+    const distStr = facility.distance || (facility.distanceKm ? `${facility.distanceKm} km` : '');
+    const distPhrase = distStr ? ` about ${distStr} away.` : '.';
+
+    if (lang === 'ta') {
+      responseText = `நிச்சயமாக. வரைபடத்தில் ${facility.name}-ஐக் காட்டுகிறேன். இது சுமார் ${facility.distance || (facility.distanceKm + ' km')} தொலைவில் உள்ளது.`;
+    } else if (lang === 'hi') {
+      responseText = `ज़रूर। मैं अब मानचित्र पर ${facility.name} दिखा रहा हूँ। यह लगभग ${facility.distance || (facility.distanceKm + ' km')} दूर है।`;
+    } else {
+      responseText = `Sure. I'm showing ${facility.name} on the map now${distPhrase ? ',' + distPhrase : '.'}`;
+    }
+
+    const sentences = responseText.match(/[^.!?।]+[.!?।]+/g) || [responseText];
+    let fullText = '';
+    for (const s of sentences) {
+      if (signal?.aborted) return { cancelled: true, text: fullText, toolCalls: [] };
+      await new Promise(r => setTimeout(r, 40));
+      fullText += s;
+      onTextChunk(s);
+    }
+
+    this.addAssistantMessage(fullText);
+    return {
+      cancelled: false,
+      text: fullText,
+      toolCalls: [{ id: toolCallId, name: 'selectFacility', arguments: selectArgs }],
+      selectedFacility: facility,
+      facilityIndex: index,
+      firstTokenMs: 40,
+      totalMs: Date.now() - startTime
+    };
+  }
+
+  /**
+   * Handler for focusing the map (e.g. "share location in map", "show in map")
+   */
+  async _handleMapRequest(lastUserMsg, detailsOrSignal, signalOrOnTextChunk, onTextChunkOrOnToolCall, maybeOnToolCall) {
+    let details = {};
+    let signal = null;
+    let onTextChunk = null;
+    let onToolCall = null;
+    if (typeof signalOrOnTextChunk === 'function') {
+      signal = detailsOrSignal;
+      onTextChunk = signalOrOnTextChunk;
+      onToolCall = onTextChunkOrOnToolCall;
+    } else {
+      details = detailsOrSignal || {};
+      signal = signalOrOnTextChunk;
+      onTextChunk = onTextChunkOrOnToolCall;
+      onToolCall = maybeOnToolCall;
+    }
+    const startTime = Date.now();
+    const lang = this.language || 'en';
+
+    let facilities = this.latestFacilityResults || [];
+    if (facilities.length === 0) {
+      for (const msg of [...this.conversationHistory].reverse()) {
+        if (msg.role === 'tool') {
+          try {
+            const data = JSON.parse(msg.content);
+            if (Array.isArray(data.facilities) && data.facilities.length > 0) {
+              facilities = data.facilities;
+              this.latestFacilityResults = facilities;
+              break;
+            }
+          } catch (e) {}
+        }
+      }
+    }
+
+    if (facilities.length === 0) {
+      return this._handleHospitalSearch(lastUserMsg, signal, onTextChunk, onToolCall);
+    }
+
+    const targetFacility = this.selectedFacility || facilities[0];
+    const targetIndex = facilities.indexOf(targetFacility) >= 0 ? facilities.indexOf(targetFacility) : 0;
+    this.conversationState = 'facilities_ready';
+
+    const toolCallId = 'call_map_' + Math.random().toString(36).substring(2, 9);
+    const mapArgs = {
+      facility: targetFacility,
+      index: targetIndex,
+      lat: targetFacility.lat,
+      lon: targetFacility.lon,
+      zoom: 15
+    };
+
+    if (onToolCall && !signal?.aborted) {
+      await onToolCall('focusMap', mapArgs, toolCallId);
+    }
+
+    let responseText = '';
+    if (lang === 'ta') {
+      responseText = `வரைபடத்தில் ${targetFacility.name} காட்டப்பட்டுள்ளது. நீங்கள் வழிகளைப் பெறலாம்.`;
+    } else if (lang === 'hi') {
+      responseText = `मैंने मानचित्र पर ${targetFacility.name} पर फोकस कर दिया है। आप इसका स्थान और दिशा निर्देश देख सकते हैं।`;
+    } else {
+      responseText = `I've focused the map on ${targetFacility.name}. You can view the location and get directions.`;
+    }
+
+    const sentences = responseText.match(/[^.!?।]+[.!?।]+/g) || [responseText];
+    let fullText = '';
+    for (const s of sentences) {
+      if (signal?.aborted) return { cancelled: true, text: fullText, toolCalls: [] };
+      await new Promise(r => setTimeout(r, 40));
+      fullText += s;
+      onTextChunk(s);
+    }
+
+    this.addAssistantMessage(fullText);
+    return {
+      cancelled: false,
+      text: fullText,
+      toolCalls: [{ id: toolCallId, name: 'focusMap', arguments: mapArgs }],
+      selectedFacility: targetFacility,
+      firstTokenMs: 40,
+      totalMs: Date.now() - startTime
+    };
+  }
+
+  /**
+   * Handler for directions (e.g. "get directions", "take me to number one")
+   */
+  async _handleDirectionsRequest(lastUserMsg, detailsOrSignal, signalOrOnTextChunk, onTextChunkOrOnToolCall, maybeOnToolCall) {
+    let details = {};
+    let signal = null;
+    let onTextChunk = null;
+    let onToolCall = null;
+    if (typeof signalOrOnTextChunk === 'function') {
+      signal = detailsOrSignal;
+      onTextChunk = signalOrOnTextChunk;
+      onToolCall = onTextChunkOrOnToolCall;
+    } else {
+      details = detailsOrSignal || {};
+      signal = signalOrOnTextChunk;
+      onTextChunk = onTextChunkOrOnToolCall;
+      onToolCall = maybeOnToolCall;
+    }
+    const startTime = Date.now();
+    const lang = this.language || 'en';
+
+    let facilities = this.latestFacilityResults || [];
+    if (facilities.length === 0) {
+      for (const msg of [...this.conversationHistory].reverse()) {
+        if (msg.role === 'tool') {
+          try {
+            const data = JSON.parse(msg.content);
+            if (Array.isArray(data.facilities) && data.facilities.length > 0) {
+              facilities = data.facilities;
+              this.latestFacilityResults = facilities;
+              break;
+            }
+          } catch (e) {}
+        }
+      }
+    }
+
+    if (facilities.length === 0) {
+      return this._handleHospitalSearch(lastUserMsg, signal, onTextChunk, onToolCall);
+    }
+
+    const targetFacility = this.selectedFacility || facilities[0];
+    this.conversationState = 'navigation_requested';
+
+    const toolCallId = 'call_dir_' + Math.random().toString(36).substring(2, 9);
+    const dirArgs = {
+      facility: targetFacility,
+      mapsUrl: targetFacility.mapsUrl || `https://www.google.com/maps/dir/?api=1&destination=${targetFacility.lat},${targetFacility.lon}`
+    };
+
+    if (onToolCall && !signal?.aborted) {
+      await onToolCall('getDirections', dirArgs, toolCallId);
+    }
+
+    let responseText = '';
+    if (lang === 'ta') {
+      responseText = `${targetFacility.name}-க்கான வழிசெலுத்தல் இணைப்பை திறந்துள்ளேன்.`;
+    } else if (lang === 'hi') {
+      responseText = `${targetFacility.name} के लिए दिशा निर्देश तैयार हैं।`;
+    } else {
+      responseText = `I've opened the directions to ${targetFacility.name}. It is about ${targetFacility.distance || (targetFacility.distanceKm + ' km')} away.`;
+    }
+
+    const sentences = responseText.match(/[^.!?।]+[.!?।]+/g) || [responseText];
+    let fullText = '';
+    for (const s of sentences) {
+      if (signal?.aborted) return { cancelled: true, text: fullText, toolCalls: [] };
+      await new Promise(r => setTimeout(r, 40));
+      fullText += s;
+      onTextChunk(s);
+    }
+
+    this.addAssistantMessage(fullText);
+    return {
+      cancelled: false,
+      text: fullText,
+      toolCalls: [{ id: toolCallId, name: 'getDirections', arguments: dirArgs }],
+      targetFacility,
+      firstTokenMs: 40,
+      totalMs: Date.now() - startTime
+    };
+  }
+
+  /**
    * Deterministic handler for named facility search (e.g. "Virutcham Hospital near me")
    */
   async _handleNamedFacilitySearch(lastUserMsg, facilityName, signal, onTextChunk, onToolCall) {
     const startTime = Date.now();
     this.pendingAction = null;
     this.nearbyCareStatus = 'accepted';
+    this.conversationState = 'searching_facilities';
 
     const toolCallId = 'call_named_' + Math.random().toString(36).substring(2, 9);
     const facilityArgs = {
       facilityName: facilityName || 'Virutcham Hospital',
       careType: 'emergency',
       urgencyLevel: 'high',
+      symptoms: this.accumulatedSymptoms || [],
+      userText: lastUserMsg,
     };
     if (this.location && this.location.lat !== null && this.location.lat !== undefined && this.location.lon !== null && this.location.lon !== undefined) {
       facilityArgs.lat = this.location.lat;
@@ -392,11 +715,14 @@ class LLMClient {
     const startTime = Date.now();
     this.pendingAction = null;
     this.nearbyCareStatus = 'accepted';
+    this.conversationState = 'searching_facilities';
 
     const toolCallId = 'call_hosp_' + Math.random().toString(36).substring(2, 9);
     const facilityArgs = {
       careType: 'emergency',
       urgencyLevel: 'high',
+      symptoms: this.accumulatedSymptoms || [],
+      userText: lastUserMsg,
     };
     if (this.location && this.location.lat !== null && this.location.lat !== undefined && this.location.lon !== null && this.location.lon !== undefined) {
       facilityArgs.lat = this.location.lat;
@@ -435,11 +761,14 @@ class LLMClient {
     const startTime = Date.now();
     this.pendingAction = null;
     this.nearbyCareStatus = 'accepted';
+    this.conversationState = 'searching_facilities';
 
     const toolCallId = 'call_clinic_' + Math.random().toString(36).substring(2, 9);
     const facilityArgs = {
       careType: 'urgent_care',
       urgencyLevel: 'medium',
+      symptoms: this.accumulatedSymptoms || [],
+      userText: lastUserMsg,
     };
     if (this.location && this.location.lat !== null && this.location.lat !== undefined && this.location.lon !== null && this.location.lon !== undefined) {
       facilityArgs.lat = this.location.lat;
@@ -593,23 +922,34 @@ class LLMClient {
       .join(' ')
       .toLowerCase();
 
-    const mergedSymptoms = [];
+    this.conversationState = 'emergency';
+    const mergedSymptoms = [...(this.accumulatedSymptoms || [])];
     if (allUserText.includes('headache') || allUserText.includes('தலைவலி') || allUserText.includes('सिरदर्द')) {
-      mergedSymptoms.push('headache');
+      if (!mergedSymptoms.includes('headache')) mergedSymptoms.push('headache');
     }
-    if (isBreathing) {
+    if (allUserText.includes('nausea') || allUserText.includes('குமட்டல்') || allUserText.includes('मिचलाना')) {
+      if (!mergedSymptoms.includes('nausea')) mergedSymptoms.push('nausea');
+    }
+    if (allUserText.includes('dizzy') || allUserText.includes('dizziness') || allUserText.includes('மயக்கம்') || allUserText.includes('चक्कर')) {
+      if (!mergedSymptoms.includes('dizziness')) mergedSymptoms.push('dizziness');
+    }
+    if (allUserText.includes('fever') || allUserText.includes('காய்ச்சல்') || allUserText.includes('बुखार')) {
+      if (!mergedSymptoms.includes('fever')) mergedSymptoms.push('fever');
+    }
+    if (isBreathing && !mergedSymptoms.includes('shortness_of_breath')) {
       mergedSymptoms.push('shortness_of_breath');
     }
-    if (isChest) {
+    if (isChest && !mergedSymptoms.includes('chest pain')) {
       mergedSymptoms.push('chest pain');
     }
     if (mergedSymptoms.length === 0) {
       mergedSymptoms.push(isBreathing ? 'shortness_of_breath' : 'chest pain');
     }
+    this.accumulatedSymptoms = Array.from(new Set(mergedSymptoms));
 
     // Dispatch analyzeSymptoms tool call with merged symptoms
     const toolCallId = 'call_emerg_' + Math.random().toString(36).substring(2, 9);
-    const toolArgs = { symptoms: mergedSymptoms };
+    const toolArgs = { symptoms: this.accumulatedSymptoms };
     const toolCalls = [{
       id: toolCallId,
       type: 'function',
@@ -682,6 +1022,22 @@ class LLMClient {
       nearbyCareStatus: this.nearbyCareStatus,
     });
     const { intent, details } = intentResult;
+
+    if (intent === INTENTS.WAIT_INTERRUPTION) {
+      return this._handleWaitInterruption(signal, onTextChunk, onToolCall);
+    }
+    if (intent === INTENTS.FACILITY_SELECTION) {
+      return this._handleFacilitySelection(lastUserMsg, details, signal, onTextChunk, onToolCall);
+    }
+    if (intent === INTENTS.MAP_REQUEST) {
+      return this._handleMapRequest(lastUserMsg, details, signal, onTextChunk, onToolCall);
+    }
+    if (intent === INTENTS.DIRECTIONS_REQUEST) {
+      return this._handleDirectionsRequest(lastUserMsg, signal, onTextChunk, onToolCall);
+    }
+    if (intent === INTENTS.EMERGENCY) {
+      return this._handleEmergency(lastUserMsg, details, signal, onTextChunk, onToolCall);
+    }
 
     if (intent === INTENTS.FACILITY_CONFIRMATION_NO) {
       return this._handleFacilityDecline(lastUserMsg, signal, onTextChunk, onToolCall);
@@ -1157,6 +1513,16 @@ class LLMClient {
         }
       }
     }
+
+    // Merge any previously accumulated symptoms
+    if (Array.isArray(this.accumulatedSymptoms)) {
+      for (const s of this.accumulatedSymptoms) {
+        if (!detected.includes(s)) {
+          detected.push(s);
+        }
+      }
+    }
+    this.accumulatedSymptoms = Array.from(new Set([...(this.accumulatedSymptoms || []), ...detected]));
 
     // 3. If any symptoms are found, dispatch analyzeSymptoms tool
     if (detected.length > 0) {

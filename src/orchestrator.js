@@ -81,9 +81,17 @@ class Orchestrator extends EventEmitter {
 
     this.pendingAction = options.pendingAction || null;
     this.nearbyCareStatus = options.nearbyCareStatus || 'not_requested';
+    this.accumulatedSymptoms = options.accumulatedSymptoms ? [...options.accumulatedSymptoms] : [];
+    this.latestFacilityResults = options.latestFacilityResults ? [...options.latestFacilityResults] : [];
+    this.selectedFacility = options.selectedFacility || null;
+    this.caseContext = options.caseContext || null;
 
     // Initialize conversation
     this.llm.initConversation();
+    this.llm.accumulatedSymptoms = this.accumulatedSymptoms;
+    this.llm.latestFacilityResults = this.latestFacilityResults;
+    this.llm.selectedFacility = this.selectedFacility;
+    this.llm.caseContext = this.caseContext;
 
     console.log(`[Orchestrator:${this.sessionId}] Created (language: ${this.language})`);
   }
@@ -494,11 +502,34 @@ class Orchestrator extends EventEmitter {
       nearbyCareStatus: this.nearbyCareStatus,
     });
 
+    if (intent === INTENTS.WAIT_INTERRUPTION) {
+      let ack = "I'm listening, take your time.";
+      if (this.language === 'ta') {
+        ack = "நான் கேட்கிறேன், பொறுமையாக சொல்லுங்கள்.";
+      } else if (this.language === 'hi') {
+        ack = "मैं सुन रहा हूँ, आराम से बताइए.";
+      }
+      this.llm.addAssistantMessage(ack);
+      this.sendToClient({ type: 'transcript', role: 'assistant', text: ack, generationId: genId });
+      await this._synthesizeAndPlay(ack, genId, signal);
+      this._setState(STATE.LISTENING);
+      return;
+    }
+
     // Proactively extract and evaluate symptoms to update Live Clinical Assessment Card immediately,
-    // but ONLY when the intent is symptom_information or symptom_triage, and NOT for fever alone,
+    // but ONLY when the intent is symptom_information, symptom_triage, or emergency, and NOT for fever alone,
     // medicine requests, self-care requests, or facility declines/accepts.
-    const isSymptomIntent = intent === INTENTS.SYMPTOM_INFORMATION || intent === INTENTS.SYMPTOM_TRIAGE;
-    const detected = isSymptomIntent ? this._extractSymptoms(text) : [];
+    const isSymptomIntent = intent === INTENTS.SYMPTOM_INFORMATION || intent === INTENTS.SYMPTOM_TRIAGE || intent === INTENTS.EMERGENCY;
+    if (isSymptomIntent) {
+      const currentSymptoms = this._extractSymptoms(text);
+      for (const s of currentSymptoms) {
+        if (!this.accumulatedSymptoms.includes(s)) {
+          this.accumulatedSymptoms.push(s);
+        }
+      }
+      this.llm.accumulatedSymptoms = this.accumulatedSymptoms;
+    }
+    const detected = isSymptomIntent ? [...this.accumulatedSymptoms] : [];
     const isOnlyFever = detected.length === 1 && detected[0].toLowerCase() === 'fever';
 
     if (detected.length > 0 && !isOnlyFever) {
@@ -715,16 +746,59 @@ class Orchestrator extends EventEmitter {
         toolResult = await toolFn(facilityArgs, signal);
       } else if (toolName === 'checkAvailability') {
         toolResult = await toolFn(args?.clinicId || args?.clinic_id || 'clinic_001', signal);
+      } else if (toolName === 'focusMap') {
+        const fac = args?.facility || (this.latestFacilityResults && this.latestFacilityResults[args?.index || 0]);
+        if (fac) {
+          this.selectedFacility = fac;
+          this.llm.selectedFacility = fac;
+        }
+        toolResult = await toolFn({ ...args, facility: fac }, signal);
+      } else if (toolName === 'getDirections') {
+        const fac = args?.facility || this.selectedFacility || (this.latestFacilityResults && this.latestFacilityResults[0]);
+        if (fac) {
+          this.selectedFacility = fac;
+          this.llm.selectedFacility = fac;
+        }
+        toolResult = await toolFn({ ...args, facility: fac }, signal);
       }
 
       this.latency.recordEvent(this.sessionId, genId, 'tool_complete', { toolName });
 
       // Send live triage or care navigation update to client
       if (toolName === 'findNearbyCareFacilities') {
+        if (toolResult && Array.isArray(toolResult.facilities)) {
+          this.latestFacilityResults = toolResult.facilities;
+          this.llm.latestFacilityResults = toolResult.facilities;
+        }
         this.sendToClient({
           type: 'care_navigation_update',
           toolName: 'findNearbyCareFacilities',
           data: toolResult,
+          generationId: genId,
+        });
+      } else if (toolName === 'focusMap') {
+        const fac = toolResult.facility || this.selectedFacility;
+        this.sendToClient({
+          type: 'map_focus',
+          facility: fac,
+          index: args?.index ?? 0,
+          lat: toolResult.lat ?? fac?.lat,
+          lon: toolResult.lon ?? fac?.lon,
+          zoom: toolResult.zoom ?? 15,
+          generationId: genId,
+        });
+        this.sendToClient({
+          type: 'facility_selected',
+          facility: fac,
+          index: args?.index ?? 0,
+          generationId: genId,
+        });
+      } else if (toolName === 'getDirections') {
+        const fac = toolResult.facility || this.selectedFacility;
+        this.sendToClient({
+          type: 'directions_open',
+          facility: fac,
+          mapsUrl: toolResult.mapsUrl,
           generationId: genId,
         });
       } else {

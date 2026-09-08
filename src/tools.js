@@ -342,7 +342,7 @@ async function findNearestClinics(urgencyLevel, signal) {
   });
 
   return {
-    clinics: capable.slice(0, 3),
+    clinics: capable.slice(0, 10),
     urgencyLevel: level,
     searchRadius: '5 miles',
     disclaimer: 'These are synthetic clinic listings for demonstration purposes.',
@@ -409,6 +409,35 @@ async function findNearbyCareFacilities(params = {}, signal = null) {
   }
 
   return await searchHealthcareFacilities(options, signal);
+}
+
+/**
+ * Focus map on a specific healthcare facility
+ */
+async function focusMap(params = {}, signal = null) {
+  if (signal?.aborted) throw new Error('Tool execution cancelled');
+  const facility = params.facility || null;
+  return {
+    success: true,
+    facility,
+    lat: params.lat ?? facility?.lat,
+    lon: params.lon ?? facility?.lon,
+    zoom: params.zoom || 15,
+  };
+}
+
+/**
+ * Generate directions to a healthcare facility
+ */
+async function getDirections(params = {}, signal = null) {
+  if (signal?.aborted) throw new Error('Tool execution cancelled');
+  const facility = params.facility || null;
+  const mapsUrl = params.mapsUrl || (facility ? `https://www.google.com/maps/dir/?api=1&destination=${facility.lat},${facility.lon}` : null);
+  return {
+    success: true,
+    facility,
+    mapsUrl,
+  };
 }
 
 // Tool definitions for OpenAI function calling
@@ -495,6 +524,35 @@ const TOOL_DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'focusMap',
+      description: 'Focus Leaflet care map on a specific healthcare facility and open its popup.',
+      parameters: {
+        type: 'object',
+        properties: {
+          index: { type: 'number', description: 'Zero-based index of the facility' },
+          lat: { type: 'number', description: 'Latitude' },
+          lon: { type: 'number', description: 'Longitude' },
+          zoom: { type: 'number', description: 'Map zoom level' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'getDirections',
+      description: 'Get navigation route and directions link to a healthcare facility.',
+      parameters: {
+        type: 'object',
+        properties: {
+          mapsUrl: { type: 'string', description: 'Google Maps direction URL' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'checkAvailability',
       description: 'Check appointment availability at a specific clinic.',
       parameters: {
@@ -517,6 +575,9 @@ const TOOL_FUNCTIONS = {
   calculateUrgency,
   findNearestClinics,
   findNearbyCareFacilities,
+  focusMap,
+  selectFacility: focusMap,
+  getDirections,
   checkAvailability,
 };
 
@@ -528,6 +589,9 @@ module.exports = {
   calculateUrgency,
   findNearestClinics,
   findNearbyCareFacilities,
+  focusMap,
+  selectFacility: focusMap,
+  getDirections,
   checkAvailability,
   searchHealthcareFacilities,
   VERIFIED_FACILITIES,

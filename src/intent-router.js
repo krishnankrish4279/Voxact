@@ -15,10 +15,12 @@
  * 9. symptom_triage (asking for assessment / differential analysis)
  * 10. symptom_information (describing symptoms or answering triage questions)
  * 11. clarification (ambiguous input, hold commands, greetings, pleasantries)
- */
-
-const INTENTS = {
+ */const INTENTS = {
   EMERGENCY: 'emergency',
+  WAIT_INTERRUPTION: 'wait_interruption',
+  FACILITY_SELECTION: 'facility_selection',
+  MAP_REQUEST: 'map_request',
+  DIRECTIONS_REQUEST: 'directions_request',
   FACILITY_CONFIRMATION_NO: 'facility_confirmation_no',
   FACILITY_CONFIRMATION_YES: 'facility_confirmation_yes',
   NAMED_FACILITY_SEARCH: 'named_facility_search',
@@ -30,6 +32,176 @@ const INTENTS = {
   SYMPTOM_INFORMATION: 'symptom_information',
   CLARIFICATION: 'clarification',
 };
+
+/**
+ * Check if the text is a wait / interruption command
+ */
+function isWaitInterruption(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase().trim();
+  const raw = text.trim();
+
+  // Pure or leading wait phrases
+  if (/^(?:wait|wait\s+wait|wait\s+wait\s+wait|please\s+wait|hold\s+on|just\s+hold\s+on|hang\s+on|hold\s+up|one\s+second|just\s+a\s+second|just\s+a\s+minute|one\s+minute|stop|i'm\s+still\s+talking|im\s+still\s+talking|give\s+me\s+a\s+sec(?:ond)?)\b/i.test(lower)) {
+    // If followed by an actual symptom, it's not a pure wait command (e.g. "wait for a second my head hurts")
+    if (/\b(?:headache|head\s*hurts|pain|hurts|chest|stomach|fever|vomit|dizzy|breath)\b/i.test(lower)) {
+      return false;
+    }
+    return true;
+  }
+
+  // Tamil wait phrases
+  if (/^(?:poru|nillu|niruthu|oru\s+nimisham|irunga|kaathiru)\b/i.test(lower)) return true;
+  if (/^(?:பொறு|பொறுமை|நில்|நிறுத்து|காத்திரு|ஒரு\s*நிமிடம்|இருங்க)(?:\s|$|[.,!?])/i.test(raw) || /^(?:பொறு|பொறுமை|நில்|நிறுத்து|காத்திரு|ஒரு\s*நிமிடம்|இருங்க)$/i.test(raw)) return true;
+
+  // Hindi wait phrases
+  if (/^(?:ruko|rukiye|thahro|thahariye|ek\s+minute|ek\s+second|zara\s+ruko)\b/i.test(lower)) return true;
+  if (/^(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड|जरा\s*रुको)(?:\s|$|[.,!?])/i.test(raw) || /^(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड|जरा\s*रुको)$/i.test(raw)) return true;
+
+  return false;
+}
+
+/**
+ * Extract facility selection index if present (e.g. "show number one", "share number one", "put number one on map", "select option three")
+ */
+function extractFacilitySelection(text) {
+  if (!text) return null;
+  const lower = text.toLowerCase().trim();
+  const raw = text.trim();
+
+  const numMap = {
+    'one': 0, '1': 0, 'first': 0,
+    'two': 1, '2': 1, 'second': 1,
+    'three': 2, '3': 2, 'third': 2,
+    'four': 3, '4': 3, 'fourth': 3,
+    'five': 4, '5': 4, 'fifth': 4,
+    'six': 5, '6': 5,
+    'seven': 6, '7': 6,
+    'eight': 7, '8': 7,
+    'nine': 8, '9': 8,
+    'ten': 9, '10': 9,
+  };
+
+  // Tamil matches
+  if (/முதல்\s*(?:மருத்துவமனை|ஒன்றை|ஒன்று)?|நம்பர்\s*(?:ஒன்று|1)|ஒன்றை\s*காட்டு|முதல்\s*வசதி|1வது\s*மருத்துவமனை/i.test(raw)) {
+    return { facilityIndex: 0, facilityNumber: 1 };
+  }
+  if (/இரண்டாவது\s*(?:மருத்துவமனை|ஒன்றை|இரண்டு)?|நம்பர்\s*(?:இரண்டு|2)|இரண்டை\s*காட்டு|2வது\s*மருத்துவமனை/i.test(raw)) {
+    return { facilityIndex: 1, facilityNumber: 2 };
+  }
+  if (/மூன்றாவது\s*(?:மருத்துவமனை|ஒன்றை|மூன்று)?|நம்பர்\s*(?:மூன்று|3)|3வது\s*மருத்துவமனை/i.test(raw)) {
+    return { facilityIndex: 2, facilityNumber: 3 };
+  }
+
+  // Hindi matches
+  if (/पहला\s*(?:अस्पताल|वाला)?|नंबर\s*(?:एक|1)|पहला\s*दिखाओ|1\s*नंबर/i.test(raw)) {
+    return { facilityIndex: 0, facilityNumber: 1 };
+  }
+  if (/दूसरा\s*(?:अस्पताल|वाला)?|नंबर\s*(?:दो|2)|दूसरा\s*दिखाओ|2\s*नंबर/i.test(raw)) {
+    return { facilityIndex: 1, facilityNumber: 2 };
+  }
+  if (/तीसरा\s*(?:अस्पताल|वाला)?|नंबर\s*(?:तीन|3)|3\s*नंबर/i.test(raw)) {
+    return { facilityIndex: 2, facilityNumber: 3 };
+  }
+
+  // Explicit match for "option three", "choice two", "facility number one"
+  const optMatch = lower.match(/\b(?:option|choice|facility|hospital|clinic)\s+(?:number\s+|#)?(one|two|three|four|five|six|seven|eight|nine|ten|10|[1-9])\b/i);
+  if (optMatch && optMatch[1]) {
+    const key = optMatch[1].toLowerCase();
+    if (numMap[key] !== undefined) {
+      return {
+        facilityIndex: numMap[key],
+        facilityNumber: numMap[key] + 1
+      };
+    }
+  }
+
+  // English Regex
+  // Matches: "(show|share|put|select|take me to|go to|view|focus)? (the)? (facility|hospital|clinic|option|choice)? (number|#)? (one|two|three|four|five|1|2|3|4|5) (on map|in map)?"
+  const regex = /^(?:show|share|put|select|choose|pick|take\s+me\s+to|go\s+to|focus|view)?\s*(?:the\s+)?(?:facility|hospital|clinic|option|choice)?\s*(?:number|no\.?|#)?\s*(one|two|three|four|five|six|seven|eight|nine|ten|10|[1-9])(?:\s*(?:st|nd|rd|th)?(?:\s+(?:facility|hospital|clinic|option|choice|one))?)?(?:\s*(?:on|in)\s*(?:the\s*)?map)?$/i;
+  
+  const m = lower.match(regex);
+  if (m && m[1]) {
+    const key = m[1].toLowerCase();
+    if (numMap[key] !== undefined) {
+      return {
+        facilityIndex: numMap[key],
+        facilityNumber: numMap[key] + 1
+      };
+    }
+  }
+
+  // Partial match inside phrases like "can you share number one", "put number one on map"
+  const phraseRegex = /\b(?:show|share|put|select|choose|take\s+me\s+to|go\s+to|focus|view)\s+(?:the\s+)?(?:facility\s+|hospital\s+|clinic\s+|option\s+|choice\s+)?(?:number|no\.?|#)?\s*(one|two|three|four|five|six|seven|eight|nine|ten|10|[1-9])(?:\s*(?:on|in)\s*(?:the\s*)?map)?\b/i;
+  const pm = lower.match(phraseRegex);
+  if (pm && pm[1]) {
+    const key = pm[1].toLowerCase();
+    if (numMap[key] !== undefined) {
+      return {
+        facilityIndex: numMap[key],
+        facilityNumber: numMap[key] + 1
+      };
+    }
+  }
+
+  // "first one", "first hospital", "second one", "second hospital"
+  if (/\b(?:first|1st)\s*(?:one|hospital|facility|clinic)?\b/i.test(lower) && !/\b(?:first\s+time|first\s+aid)\b/i.test(lower)) {
+    return { facilityIndex: 0, facilityNumber: 1 };
+  }
+  if (/\b(?:second|2nd)\s*(?:one|hospital|facility|clinic)?\b/i.test(lower)) {
+    return { facilityIndex: 1, facilityNumber: 2 };
+  }
+  if (/\b(?:third|3rd)\s*(?:one|hospital|facility|clinic)?\b/i.test(lower)) {
+    return { facilityIndex: 2, facilityNumber: 3 };
+  }
+
+  return null;
+}
+
+/**
+ * Check if the text matches map focus request
+ */
+function isMapRequest(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase().trim();
+  const raw = text.trim();
+
+  if (
+    /\b(?:share|show|view|open|focus|display|put|pinpoint)\s+(?:the\s+)?(?:location|hospital|clinic|facility)?\s*(?:in|on)\s*(?:the\s*)?map\b/i.test(lower) ||
+    /\b(?:share|show)\s+(?:the\s+)?location\b/i.test(lower) ||
+    /\b(?:open|show|focus|view)\s+(?:the\s+)?map\b/i.test(lower) ||
+    /\bwhere\s+is\s+it\s+on\s+(?:the\s+)?map\b/i.test(lower) ||
+    /\b(?:on|in)\s+(?:the\s+)?map\b/i.test(lower) ||
+    /\bmap\s*la\s*kaatunga\b/i.test(lower)
+  ) {
+    return true;
+  }
+
+  if (/வரைபடத்தில்\s*காட்டு|மேப்பில்\s*காட்டு|வரைபடம்|இடத்தைக்\s*காட்டு|லொகேஷன்\s*காட்டு/i.test(raw)) return true;
+  if (/नक्शे\s*पर\s*दिखाओ|मानचित्र\s*पर\s*दिखाएं|मानचित्र|लोकेशन\s*दिखाओ/i.test(raw)) return true;
+
+  return false;
+}
+
+/**
+ * Check if the text matches navigation / directions request
+ */
+function isDirectionsRequest(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase().trim();
+  const raw = text.trim();
+
+  if (
+    /\b(?:directions?|get\s+directions?|navigate|navigation|route|how\s+do\s+i\s+get\s+there|how\s+to\s+reach|way\s+to\s+(?:the\s+)?hospital|take\s+me\s+there)\b/i.test(lower)
+  ) {
+    return true;
+  }
+
+  if (/வழி\s*காட்டு|திசைகள்|வழிகாட்டுதல்|எப்படி\s*போவது/i.test(raw)) return true;
+  if (/दिशा\s*निर्देश|रास्ता|रास्ता\s*दिखाओ|दिशाएं|कैसे\s*पहुंचे/i.test(raw)) return true;
+
+  return false;
+}
 
 /**
  * Check if the text matches negative / decline intent
@@ -87,9 +259,6 @@ function isPendingFacilityOffer(previousAssistantMsg, pendingAction, nearbyCareS
   );
 }
 
-/**
- * Extract named facility query if present (e.g. "Virutcham Hospital", "show Virutcham Hospital near me")
- */
 /**
  * Extract named facility query if present (e.g. "Virutcham Hospital", "show Virutcham Hospital near me")
  */
@@ -158,7 +327,50 @@ function classifyUserIntent(userText, context = {}) {
   const { previousAssistantMsg = '', pendingAction = null, nearbyCareStatus = 'not_requested' } = context;
 
   // ─────────────────────────────────────────────────────────────────
-  // 1. EMERGENCY (Safety-first priority)
+  // 1. WAIT / INTERRUPTION (Cancel/halt current generation, keep case)
+  // ─────────────────────────────────────────────────────────────────
+  if (isWaitInterruption(text)) {
+    return {
+      intent: INTENTS.WAIT_INTERRUPTION,
+      details: { raw: text }
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // 2. FACILITY SELECTION (e.g. "show number one", "share number one", "put number one on map")
+  // MUST NEVER be treated as a symptom intake or clarification message!
+  // ─────────────────────────────────────────────────────────────────
+  const facilitySelection = extractFacilitySelection(text);
+  if (facilitySelection) {
+    return {
+      intent: INTENTS.FACILITY_SELECTION,
+      details: facilitySelection
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // 3. MAP FOCUS REQUEST (e.g. "share location in map", "show in map", "focus map")
+  // MUST NEVER be treated as a symptom intake or clarification message!
+  // ─────────────────────────────────────────────────────────────────
+  if (isMapRequest(text)) {
+    return {
+      intent: INTENTS.MAP_REQUEST,
+      details: {}
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // 4. DIRECTIONS / NAVIGATION REQUEST (e.g. "get directions", "take me to number one")
+  // ─────────────────────────────────────────────────────────────────
+  if (isDirectionsRequest(text)) {
+    return {
+      intent: INTENTS.DIRECTIONS_REQUEST,
+      details: {}
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // 5. EMERGENCY (Safety-first priority)
   // Severe symptoms that must bypass routine self-care:
   // shortness of breath, chest pain, fainting, vomiting blood, seizure
   // ─────────────────────────────────────────────────────────────────
@@ -196,7 +408,7 @@ function classifyUserIntent(userText, context = {}) {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // 2. FACILITY CONFIRMATIONS (When an offer was pending)
+  // 6. FACILITY CONFIRMATIONS (When an offer was pending)
   // ─────────────────────────────────────────────────────────────────
   const hasOffer = isPendingFacilityOffer(previousAssistantMsg, pendingAction, nearbyCareStatus);
 
@@ -208,13 +420,15 @@ function classifyUserIntent(userText, context = {}) {
     return { intent: INTENTS.FACILITY_CONFIRMATION_YES, details: { previousAction: pendingAction } };
   }
 
-  // Standalone decline of hospital/care (e.g. "no hospital", "don't check clinics")
-  if (isDecline(text) && /\b(hospital|clinic|doctor|care|மருத்துவமனை|கிளினிக்|अस्पताल)\b/i.test(lower)) {
-    return { intent: INTENTS.FACILITY_CONFIRMATION_NO, details: { standaloneDecline: true } };
+  // Standalone decline of hospital/care (e.g. "no hospital", "don't check clinics", "no")
+  if (isDecline(text)) {
+    if (/\b(hospital|clinic|doctor|care|மருத்துவமனை|கிளினிக்|அஸ்பத்தால்|அஸ்பத்திரி|अस्पताल)\b/i.test(lower) || hasOffer) {
+      return { intent: INTENTS.FACILITY_CONFIRMATION_NO, details: { standaloneDecline: true } };
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // 3. NAMED FACILITY SEARCH (e.g. "Virutcham Hospital near me")
+  // 7. NAMED FACILITY SEARCH (e.g. "Virutcham Hospital near me")
   // ─────────────────────────────────────────────────────────────────
   const namedFacility = extractNamedFacility(text);
   if (namedFacility) {
@@ -222,7 +436,7 @@ function classifyUserIntent(userText, context = {}) {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // 4. "DON'T TELL ME TO GO TO A DOCTOR" / SELF-CARE / HOME REMEDIES
+  // 8. "DON'T TELL ME TO GO TO A DOCTOR" / SELF-CARE / HOME REMEDIES
   // (Check BEFORE generic care search so "don't suggest doctor" is not routed as hospital search!)
   // ─────────────────────────────────────────────────────────────────
   const isAntiDoctor = (
@@ -246,7 +460,7 @@ function classifyUserIntent(userText, context = {}) {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // 5. MEDICINE REQUEST (e.g. "what medicine can I take", "tablet for fever")
+  // 9. MEDICINE REQUEST (e.g. "what medicine can I take", "tablet for fever")
   // ─────────────────────────────────────────────────────────────────
   const isMedicine = (
     /\b(medicine|medication|tablets?|pills?|syrup|capsules?|dosage|what\s+can\s+i\s+take|take\s+for|suggest\s+(?:some\s+)?medicine|any\s+medicine|high\s+fever\s+medicine|fever\s+medicine|medicine\s+for\s+fever)\b/i.test(lower) ||
@@ -259,14 +473,19 @@ function classifyUserIntent(userText, context = {}) {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // 6. EXPLICIT HOSPITAL / EMERGENCY ROOM SEARCH
+  // 10. EXPLICIT HOSPITAL / EMERGENCY ROOM SEARCH
   // ─────────────────────────────────────────────────────────────────
   const isHospitalSearch = (
-    /\b(?:suggest|find|show|locate|search|nearest|closest|near\s+me)\s+(?:a\s+)?(?:hospital|emergency\s*room|er)\b/i.test(lower) ||
-    /\b(?:hospital|emergency\s*room|er)\s+near\s+me\b/i.test(lower) ||
-    /\bsuggest\s+(?:a\s+)?nearby\s+hospital\b/i.test(lower) ||
+    /\b(?:suggest|find|show|locate|search|nearest|closest|near\s+me|nearby)\s+(?:a\s+)?(?:nearby\s+)?(?:hospital|emergency\s*room|er)s?\b/i.test(lower) ||
+    /\b(?:hospital|emergency\s*room|er)s?\s+near\s+me\b/i.test(lower) ||
+    /\bnearby\s+hospitals?\b/i.test(lower) ||
+    /\bsearch\s+(?:nearby\s+)?hospitals?\b/i.test(lower) ||
+    /\bnear\s+me\s+hospitals?\b/i.test(lower) ||
+    /\bshow\s+hospitals?\b/i.test(lower) ||
+    /\bfind\s+(?:a\s+)?hospitals?\b/i.test(lower) ||
+    /\bsuggest\s+(?:a\s+)?nearby\s+hospitals?\b/i.test(lower) ||
     /\bwhere\s+is\s+(?:the\s+)?(?:nearest|closest)?\s*hospital\b/i.test(lower) ||
-    /அருகில்\s*உள்ள\s*மருத்துவமனை|மருத்துவமனை\s*பரிந்துரை|மருத்துவமனை\s*எங்கே|அஸ்பத்தால்\s*காட்டு/i.test(text) ||
+    /அருகில்\s*உள்ள\s*மருத்துவமனை|மருத்துவமனை\s*பரிந்துரை|மருத்துவமனை\s*எங்கே|அஸ்பத்தால்\s*காட்டு|மருத்துவமனையை\s*தேடு/i.test(text) ||
     /नजदीकी\s*अस्पताल|अस्पताल\s*खोजें|पास\s*का\s*अस्पताल|अस्पताल\s*बताएं/i.test(text)
   );
 
@@ -275,12 +494,16 @@ function classifyUserIntent(userText, context = {}) {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // 7. EXPLICIT CLINIC / URGENT CARE SEARCH
+  // 11. EXPLICIT CLINIC / URGENT CARE SEARCH
   // ─────────────────────────────────────────────────────────────────
   const isClinicSearch = (
-    /\b(?:suggest|find|show|locate|search|nearest|closest|near\s+me)\s+(?:a\s+)?(?:clinic|urgent\s*care|walk-?in\s*clinic|doctor's\s*office)\b/i.test(lower) ||
-    /\b(?:clinic|urgent\s*care)\s+near\s+me\b/i.test(lower) ||
-    /\bsuggest\s+(?:a\s+)?nearby\s+clinic\b/i.test(lower) ||
+    /\b(?:suggest|find|show|locate|search|nearest|closest|near\s+me|nearby)\s+(?:a\s+)?(?:nearby\s+)?(?:clinic|urgent\s*care|walk-?in\s*clinic|doctor's\s*office)s?\b/i.test(lower) ||
+    /\b(?:clinic|urgent\s*care)s?\s+near\s+me\b/i.test(lower) ||
+    /\bnearby\s+clinics?\b/i.test(lower) ||
+    /\bsearch\s+(?:nearby\s+)?clinics?\b/i.test(lower) ||
+    /\bshow\s+clinics?\b/i.test(lower) ||
+    /\bfind\s+(?:a\s+)?clinics?\b/i.test(lower) ||
+    /\bsuggest\s+(?:a\s+)?nearby\s+clinics?\b/i.test(lower) ||
     /அருகில்\s*உள்ள\s*கிளினிக்|கிளினிக்\s*பரிந்துரை|கிளினிக்\s*எங்கே/i.test(text) ||
     /नजदीकी\s*क्लिनिक|क्लिनिक\s*खोजें|पास\s*का\s*क्लिनिक/i.test(text)
   );
@@ -290,7 +513,7 @@ function classifyUserIntent(userText, context = {}) {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // 8. SYMPTOM TRIAGE (asking "what could this be", "diagnose me")
+  // 12. SYMPTOM TRIAGE (asking "what could this be", "diagnose me")
   // ─────────────────────────────────────────────────────────────────
   const isTriageQuery = (
     /\b(what\s+could\s+(?:this|it)\s+be|what\s+do\s+i\s+have|diagnose|is\s+this\s+serious|triage\s+this|what\s+disease|what\s+infection)\b/i.test(lower) ||
@@ -303,7 +526,7 @@ function classifyUserIntent(userText, context = {}) {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // 9. SYMPTOM INFORMATION (stating symptoms or answering questions)
+  // 13. SYMPTOM INFORMATION (stating symptoms or answering questions)
   // ─────────────────────────────────────────────────────────────────
   const hasSymptomKeywords = (
     /\b(fever|headache|migraine|dizzy|dizziness|nausea|vomit|vomiting|cough|sore\s*throat|chest\s*pain|stomach\s*pain|abdominal|back\s*pain|knee\s*pain|knees|joint\s*pain|rash|weakness|fatigue|temperature|chills|shivering|body\s*pain|hurts|pain|shortness\s*of\s*breath|shortness_of_breath|breathing|breathless|eye\s*pain|vision|eyes?|tooth|teeth|toothache|dental)\b/i.test(lower) ||
@@ -320,7 +543,7 @@ function classifyUserIntent(userText, context = {}) {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // 10. CLARIFICATION / GREETINGS / HOLD
+  // 14. CLARIFICATION / GREETINGS / HOLD
   // ─────────────────────────────────────────────────────────────────
   return { intent: INTENTS.CLARIFICATION, details: {} };
 }
@@ -332,4 +555,9 @@ module.exports = {
   isAffirmative,
   extractNamedFacility,
   isPendingFacilityOffer,
+  isWaitInterruption,
+  extractFacilitySelection,
+  isMapRequest,
+  isDirectionsRequest,
 };
+

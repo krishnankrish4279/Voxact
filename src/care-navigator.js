@@ -537,7 +537,9 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
   });
 
   for (const { radiusKm, delta } of searchRadii) {
-    if (rawFacilities.length > 0 || signal?.aborted) break;
+    if (signal?.aborted) break;
+    // Continue progressive search if we haven't found at least 5 facilities yet
+    if (rawFacilities.length >= 5) break;
 
     try {
       liveSearchAttempted = true;
@@ -594,11 +596,18 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
             };
           });
 
-          // MEDICAL RELEVANCE FILTER BEFORE DISTANCE SORTING:
+          // MEDICAL RELEVANCE FILTER + DEDUPLICATION:
           // Filter out facilities that do not match the user's medical care need
-          const relevant = parsed.filter(fac => isFacilityRelevant(fac, userCareNeed));
-          if (relevant.length > 0) {
-            rawFacilities = relevant;
+          for (const fac of parsed) {
+            if (isFacilityRelevant(fac, userCareNeed)) {
+              const alreadyPresent = rawFacilities.some(existing =>
+                existing.name.toLowerCase() === fac.name.toLowerCase() ||
+                (Math.abs(existing.lat - fac.lat) < 0.0005 && Math.abs(existing.lon - fac.lon) < 0.0005)
+              );
+              if (!alreadyPresent) {
+                rawFacilities.push(fac);
+              }
+            }
           }
         }
       }
@@ -651,26 +660,34 @@ async function searchHealthcareFacilities(options = {}, signal = null) {
     return (a.distanceMiles ?? 999) - (b.distanceMiles ?? 999);
   });
 
-  const topRecommendations = ranked.slice(0, 3).map((f, index) => ({
-    rank: index + 1,
-    id: f.id,
-    name: f.name,
-    careType: f.careType,
-    category: f.category,
-    address: f.address,
-    lat: f.lat,
-    lon: f.lon,
-    distance: f.distance || formatDistanceMetric(f.distanceMiles),
-    distanceMiles: f.distanceMiles,
-    phone: f.phone || null,
-    emergencyCapable: Boolean(f.emergencyCapable),
-    isFallback: Boolean(f.isFallback),
-    fallbackLabel: f.isFallback ? 'Demo fallback — not live nearby data' : null,
-    openStatus: f.openStatus || null,
-    rating: f.rating || null,
-    reviewCount: f.reviewCount || null,
-    mapsUrl: `https://www.google.com/maps/dir/?api=1&destination=${f.lat},${f.lon}`
-  }));
+  const resultLimit = options.limit !== undefined ? Number(options.limit) : 10;
+  const topRecommendations = ranked.slice(0, resultLimit).map((f, index) => {
+    const distMiles = f.distanceMiles ?? 0;
+    const distKm = Math.round(distMiles * 1.60934 * 10) / 10;
+    return {
+      rank: index + 1,
+      id: f.id || `fac_${index + 1}`,
+      name: f.name,
+      type: f.careType || f.category || 'hospital',
+      careType: f.careType,
+      category: f.category,
+      address: f.address,
+      lat: f.lat,
+      lon: f.lon,
+      distance: f.distance || formatDistanceMetric(f.distanceMiles),
+      distanceKm: distKm,
+      distanceMiles: f.distanceMiles,
+      phone: f.phone || null,
+      emergencyCapable: Boolean(f.emergencyCapable),
+      source: f.isFallback ? 'fallback' : 'live',
+      isFallback: Boolean(f.isFallback),
+      fallbackLabel: f.isFallback ? 'Demo fallback — not live nearby data' : null,
+      openStatus: f.openStatus || null,
+      rating: f.rating || null,
+      reviewCount: f.reviewCount || null,
+      mapsUrl: f.mapsUrl || `https://www.google.com/maps/dir/?api=1&destination=${f.lat},${f.lon}`
+    };
+  });
 
   // Build spoken guidance in appropriate language
   let spokenSummary = '';

@@ -186,6 +186,9 @@ class FillerManager {
       'calculateUrgency': 'urgency_check',
       'findNearestClinics': 'clinic_search',
       'findNearbyCareFacilities': 'clinic_search',
+      'focusMap': 'clinic_search',
+      'selectFacility': 'clinic_search',
+      'getDirections': 'clinic_search',
       'checkAvailability': 'scheduling',
     };
 
