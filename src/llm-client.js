@@ -15,6 +15,9 @@ const {
   isAffirmative: routerIsAffirmative,
   extractNamedFacility,
   isPendingFacilityOffer,
+  isWaitInterruption,
+  stripControlPrefix,
+  normalizeConversationalControl,
 } = require('./intent-router');
 
 const SYSTEM_PROMPT_EN = `You are VoxAct, a voice-based medical triage assistant. Your responses will be spoken aloud using text-to-speech, so write for the ear, not the eye.
@@ -149,6 +152,14 @@ class LLMClient {
     this.selectedFacility = config.selectedFacility || null;
     this.accumulatedSymptoms = config.accumulatedSymptoms || [];
     this.conversationState = config.conversationState || 'intake';
+    this.currentUserTurn = config.currentUserTurn || null;
+    this.lastAssistantQuestion = config.lastAssistantQuestion || null;
+    this.pendingQuestion = config.pendingQuestion || null;
+    this.collectedSymptoms = config.collectedSymptoms || {};
+    this.answeredQuestions = new Set(config.answeredQuestions || []);
+    this.currentTriageState = config.currentTriageState || 'intake';
+    this.generationId = config.generationId || null;
+    this.responseId = config.responseId || null;
     this.caseContext = config.caseContext || {
       symptoms: [],
       rawTranscripts: [],
@@ -1021,6 +1032,104 @@ class LLMClient {
     const lastUserMsg = [...this.conversationHistory].reverse().find(m => m.role === 'user')?.content || '';
     const previousAssistantMsg = [...this.conversationHistory].reverse().find(m => m.role === 'assistant' && m.content)?.content || '';
 
+    // 0. Isolated hesitation fragment filter (e.g. "ஒரு", "ம்", "um")
+    const cleanMsg = (lastUserMsg || '').trim().toLowerCase();
+    const isHesitation = cleanMsg === 'ஒரு' || cleanMsg === 'ம்' || cleanMsg === 'um' || cleanMsg === 'uh' || cleanMsg === 'ஹ்ம்' || cleanMsg === 'உம்' || cleanMsg === 'er' || cleanMsg === 'ah';
+    if (isHesitation) {
+      return this._handleWaitInterruption(signal, onTextChunk, onToolCall);
+    }
+
+    // 0b. Check if responding to a pending fever question from the assistant
+    const isFeverQuestionAsked = (this.pendingQuestion && this.pendingQuestion.symptom === 'fever') ||
+      /காய்ச்சல் இருக்கிறதா|காய்ச்சல் உள்ளதா|காய்ச்சல் அல்லது வலி உள்ளதா|இந்தக் காய்ச்சல் எத்தனை நாட்களாக|is there a fever|do you have a fever|क्या आपको बुखार है/i.test(previousAssistantMsg);
+
+    if (isFeverQuestionAsked) {
+      if (isNegative(lastUserMsg) && !lastUserMsg.toLowerCase().includes('clinic') && !lastUserMsg.toLowerCase().includes('hospital')) {
+        this.collectedSymptoms['fever'] = false;
+        this.accumulatedSymptoms = this.accumulatedSymptoms.filter(s => s !== 'fever' && s !== 'காய்ச்சல்' && s !== 'बुखार');
+        this.answeredQuestions.add('fever_inquiry');
+        this.answeredQuestions.add('fever_clarification');
+        this.pendingQuestion = null;
+
+        const lang = this.language || 'en';
+        let negText = '';
+        if (lang === 'ta') {
+          negText = "சரி, காய்ச்சல் இல்லை என்பதை குறித்துக் கொண்டேன். உங்களுக்கு வேறு ஏதேனும் அறிகுறிகள் அல்லது தொந்தரவுகள் உள்ளதா?";
+        } else if (lang === 'hi') {
+          negText = "ठीक है, बुखार नहीं है। क्या आपको कोई अन्य लक्षण महसूस हो रहे हैं?";
+        } else {
+          negText = "Understood, no fever noted. Are there any other symptoms you are experiencing?";
+        }
+
+        const sentences = negText.match(/[^.!?।]+[.!?।]+/g) || [negText];
+        let fullText = '';
+        for (const s of sentences) {
+          if (signal?.aborted) return { cancelled: true, text: fullText, toolCalls: [] };
+          await new Promise(r => setTimeout(r, 40));
+          fullText += s;
+          onTextChunk(s);
+        }
+        this.addAssistantMessage(fullText);
+        return {
+          cancelled: false,
+          text: fullText,
+          toolCalls: [],
+          firstTokenMs: 40,
+          totalMs: 40,
+        };
+      }
+
+      // Check if affirmative or stating fever
+      const isFeverAffirmative = isAffirmative(lastUserMsg) ||
+        lastUserMsg.includes('காய்ச்சல்') || lastUserMsg.includes('fever') || lastUserMsg.includes('बुखार') ||
+        lastUserMsg.includes('ஜுரம்') || lastUserMsg.includes('சூடு');
+
+      if (isFeverAffirmative) {
+        this.collectedSymptoms['fever'] = true;
+        if (!this.accumulatedSymptoms.includes('fever')) {
+          this.accumulatedSymptoms.push('fever');
+        }
+        this.answeredQuestions.add('fever_inquiry');
+        this.pendingQuestion = null;
+
+        const hasOtherSymptom = /\b(headache|dizzy|nausea|vomit|chest|breath|cough|throat|stomach|pain|வலி|இருமல்|சளி|மயக்கம்|दर्द|खांसी)\b/i.test(lastUserMsg);
+        if (!hasOtherSymptom) {
+          this.answeredQuestions.add('fever_clarification');
+          const lang = this.language || 'en';
+          let ackFever = '';
+          if (lang === 'ta') {
+            ackFever = "காய்ச்சல் இருப்பதை உறுதி செய்துள்ளோம். நீரிழப்பைத் தவிர்க்க நிறைய தண்ணீர் அல்லது கஞ்சி குடித்து ஓய்வெடுக்கவும். காய்ச்சல் தீவிரமடைந்தாலோ அல்லது 3 நாட்களுக்கு மேல் நீடித்தாலோ மருத்துவரை அணுகவும்.";
+          } else if (lang === 'hi') {
+            ackFever = "बुखार की पुष्टि हो चुकी है। पर्याप्त आराम करें और पानी पीकर हाइड्रेटेड रहें। यदि बुखार बना रहता है या बढ़ता है, तो तुरंत डॉक्टर से संपर्क करें।";
+          } else {
+            ackFever = "Your fever has been noted. Please get plenty of rest and stay well-hydrated. If the fever continues or worsens, consult a healthcare professional.";
+          }
+
+          const toolCallId = 'call_fever_' + Math.random().toString(36).substring(2, 9);
+          if (onToolCall && !signal?.aborted) {
+            await onToolCall('analyzeSymptoms', { symptoms: ['fever'] }, toolCallId);
+          }
+
+          const sentences = ackFever.match(/[^.!?।]+[.!?।]+/g) || [ackFever];
+          let fullText = '';
+          for (const s of sentences) {
+            if (signal?.aborted) return { cancelled: true, text: fullText, toolCalls: [] };
+            await new Promise(r => setTimeout(r, 40));
+            fullText += s;
+            onTextChunk(s);
+          }
+          this.addAssistantMessage(fullText);
+          return {
+            cancelled: false,
+            text: fullText,
+            toolCalls: [{ id: toolCallId, name: 'analyzeSymptoms', arguments: { symptoms: ['fever'] } }],
+            firstTokenMs: 40,
+            totalMs: 40,
+          };
+        }
+      }
+    }
+
     // 1. Strict user-intent classification for latest user message
     const intentResult = classifyUserIntent(lastUserMsg, {
       previousAssistantMsg,
@@ -1325,33 +1434,25 @@ class LLMClient {
    */
   async _simulateCompletion(signal, onTextChunk, onToolCall) {
     const startTime = Date.now();
-    const lastUserMsg = [...this.conversationHistory].reverse().find(m => m.role === 'user')?.content || '';
-    const lower = lastUserMsg.toLowerCase().trim();
+    const rawUserMsg = [...this.conversationHistory].reverse().find(m => m.role === 'user')?.content || '';
     const lang = this.language || 'en';
 
-    // 1. Immediate hold / pause command handling across English, Tamil, and Hindi
-    const isHoldCommand = /^(wait|hold on|stop|one second|just a second|hang on|poru|nillu|niruthu|ruko|rukiye|thahro)\b/i.test(lower) ||
-      lastUserMsg.includes('பொறு') || lastUserMsg.includes('நில்') || lastUserMsg.includes('நிறுத்து') || lastUserMsg.includes('காத்திரு') || lastUserMsg.includes('ஒரு நிமிடம்') ||
-      lastUserMsg.includes('रुको') || lastUserMsg.includes('रुकिए') || lastUserMsg.includes('ठहरो') || lastUserMsg.includes('ठहरिए') || lastUserMsg.includes('बंद करो') || lastUserMsg.includes('एक मिनट');
-
-    if (isHoldCommand) {
-      let ack = "I'm listening, take your time.";
-      if (lang === 'ta') {
-        ack = "நான் கேட்கிறேன், பொறுமையாக சொல்லுங்கள்.";
-      } else if (lang === 'hi') {
-        ack = "मैं सुन रहा हूँ, आराम से बताइए।";
-      }
-
-      onTextChunk(ack);
-      this.addAssistantMessage(ack);
+    // 1. Standalone / Pure hold command handling:
+    // When user says "பொரு", "wait", "hold on", enter quiet wait: NO assistant response, NO LLM call, NO triage!
+    if (isWaitInterruption(rawUserMsg)) {
+      console.log(`[LLM] Pure hold command ("${rawUserMsg}") received: quiet wait without LLM call or assistant response`);
       return {
         cancelled: false,
-        text: ack,
+        text: '',
         toolCalls: [],
-        firstTokenMs: 20,
+        firstTokenMs: 0,
         totalMs: Date.now() - startTime,
       };
     }
+
+    // Strip leading conversational control prefix if user started with "பொரு", "wait", etc. then continued
+    const lastUserMsg = stripControlPrefix(rawUserMsg) || rawUserMsg;
+    const lower = lastUserMsg.toLowerCase().trim();
 
     // 2. Medicine / Drug guidance request safety flow
     const isMedicineRequest = /\b(medicine|medication|tablets?|pills?|drug|syrup|dosage|what can i take|take for)\b/i.test(lower) ||
@@ -1624,12 +1725,20 @@ class LLMClient {
       } else if (/\b(நன்றி|thanks)\b/i.test(lower)) {
         responseText = "மகிழ்ச்சி. வேறு ஏதேனும் அறிகுறிகள் உள்ளதா என்பதைத் தெரிவிக்கவும்.";
       } else {
+        const feverAlreadyHandled = (this.answeredQuestions && (this.answeredQuestions.has('fever_inquiry') || this.answeredQuestions.has('fever_clarification'))) ||
+          this.collectedSymptoms['fever'] !== undefined;
+
         const dynamicInquiriesTa = [
           "நான் கவனமாகக் கேட்கிறேன். உங்கள் உடலில் என்ன மாற்றங்களை அல்லது அசௌகரியத்தை உணர்கிறீர்கள்?",
-          "உங்களுக்கு தலைவலி, காய்ச்சல், அல்லது வேறு ஏதேனும் உடல் வலி உள்ளதா?",
+          feverAlreadyHandled
+            ? "நான் கவனமாகக் கேட்கிறேன். உங்கள் உடலில் வேறு என்ன மாற்றங்களை அல்லது அசௌகரியத்தை உணர்கிறீர்கள்?"
+            : "உங்களுக்கு தலைவலி, காய்ச்சல், அல்லது வேறு ஏதேனும் உடல் வலி உள்ளதா?",
           "நீங்கள் உணரும் முக்கிய தொந்தரவை விளக்கினால், நான் சரியான வழிகாட்டலை வழங்க முடியும்.",
         ];
         responseText = dynamicInquiriesTa[userTurnCount % dynamicInquiriesTa.length];
+        if (responseText.includes('காய்ச்சல்')) {
+          this.pendingQuestion = { id: 'fever_inquiry', symptom: 'fever', questionText: responseText };
+        }
       }
     } else if (lang === 'hi') {
       if (/\b(नमस्ते|नमस्कार|हेलो|hello|hi)\b/i.test(lower)) {
@@ -1719,12 +1828,25 @@ class LLMClient {
         }
       }
     } else if (toolData && toolData.isOnlyFever) {
-      if (lang === 'ta') {
-        responseText = toolData.clarificationPromptTa || "இந்தக் காய்ச்சல் எத்தனை நாட்களாக இருக்கிறது, வெப்பநிலை என்னவென்று அளந்தீர்களா, மற்றும் சளி அல்லது தொண்டை வலி போன்ற பிற அறிகுறிகள் உள்ளதா?";
-      } else if (lang === 'hi') {
-        responseText = toolData.clarificationPromptHi || "यह बुखार कितने दिनों से है, क्या आपने तापमान नापा है, और क्या आपको खांसी या ठंड लगने जैसे अन्य लक्षण भी हैं?";
+      if (this.answeredQuestions && this.answeredQuestions.has('fever_clarification')) {
+        if (lang === 'ta') {
+          responseText = "காய்ச்சல் இருப்பதை உறுதி செய்துள்ளோம். நீரிழப்பைத் தவிர்க்க நிறைய தண்ணீர் அல்லது கஞ்சி குடித்து ஓய்வெடுக்கவும். காய்ச்சல் தீவிரமடைந்தாலோ அல்லது 3 நாட்களுக்கு மேல் நீடித்தாலோ மருத்துவரை அணுகவும்.";
+        } else if (lang === 'hi') {
+          responseText = "बुखार की पुष्टि हो चुकी है। पर्याप्त आराम करें और पानी पीकर हाइड्रेटेड रहें। यदि बुखार बना रहता है या बढ़ता है, तो तुरंत डॉक्टर से संपर्क करें।";
+        } else {
+          responseText = "Your fever has been noted. Please focus on rest and hydration. If the fever continues or worsens, consult a healthcare professional.";
+        }
       } else {
-        responseText = toolData.clarificationPrompt || "To better understand your fever, could you tell me how long you've had it, what temperature you measured, and whether you have other symptoms like a cough, sore throat, or chills?";
+        if (!this.answeredQuestions) this.answeredQuestions = new Set();
+        this.answeredQuestions.add('fever_clarification');
+        if (lang === 'ta') {
+          responseText = toolData.clarificationPromptTa || "இந்தக் காய்ச்சல் எத்தனை நாட்களாக இருக்கிறது, வெப்பநிலை என்னவென்று அளந்தீர்களா, மற்றும் சளி அல்லது தொண்டை வலி போன்ற பிற அறிகுறிகள் உள்ளதா?";
+        } else if (lang === 'hi') {
+          responseText = toolData.clarificationPromptHi || "यह बुखार कितने दिनों से है, क्या आपने तापमान नापा है, और क्या आपको खांसी या ठंड लगने जैसे अन्य लक्षण भी हैं?";
+        } else {
+          responseText = toolData.clarificationPrompt || "To better understand your fever, could you tell me how long you've had it, what temperature you measured, and whether you have other symptoms like a cough, sore throat, or chills?";
+        }
+        this.pendingQuestion = { id: 'fever_clarification', symptom: 'fever', questionText: responseText };
       }
     } else if (toolData && toolData.possibleConditions && toolData.possibleConditions.length > 0) {
       const top = toolData.possibleConditions[0];

@@ -25,7 +25,7 @@ const FillerManager = require('./filler-manager');
 const LatencyTracker = require('./latency-tracker');
 const { normalizeMedicalSpeech } = require('./medical-transcriber');
 const { TOOL_FUNCTIONS } = require('./tools');
-const { classifyUserIntent, INTENTS } = require('./intent-router');
+const { classifyUserIntent, INTENTS, isWaitInterruption, stripControlPrefix, normalizeConversationalControl } = require('./intent-router');
 
 // States
 const STATE = {
@@ -85,6 +85,9 @@ class Orchestrator extends EventEmitter {
     this.latestFacilityResults = options.latestFacilityResults ? [...options.latestFacilityResults] : [];
     this.selectedFacility = options.selectedFacility || null;
     this.caseContext = options.caseContext || null;
+    this.pendingQuestion = options.pendingQuestion || null;
+    this.answeredQuestions = options.answeredQuestions ? new Set(options.answeredQuestions) : new Set();
+    this.collectedSymptoms = options.collectedSymptoms || {};
 
     // Initialize conversation
     this.llm.initConversation();
@@ -92,6 +95,9 @@ class Orchestrator extends EventEmitter {
     this.llm.latestFacilityResults = this.latestFacilityResults;
     this.llm.selectedFacility = this.selectedFacility;
     this.llm.caseContext = this.caseContext;
+    this.llm.pendingQuestion = this.pendingQuestion;
+    this.llm.answeredQuestions = this.answeredQuestions;
+    this.llm.collectedSymptoms = this.collectedSymptoms;
 
     console.log(`[Orchestrator:${this.sessionId}] Created (language: ${this.language})`);
   }
@@ -365,11 +371,31 @@ class Orchestrator extends EventEmitter {
 
     console.log(`[Orchestrator:${this.sessionId}] User said: raw="${rawTranscript}" | normalized="${normalizedTranscript}" (terms: ${detectedMedicalTerms.length})`);
 
+    // Contextual normalization of conversational control phrases (e.g. "ஒரு" -> "பொரு" if speaking/waiting)
+    const normalizedControl = normalizeConversationalControl(rawTranscript, {
+      assistantSpeaking: this.state === STATE.SPEAKING || this.state === STATE.TOOL_WORK,
+      pendingQuestion: this.pendingQuestion,
+      lastAssistantMsg: this.spokenTextBuffer
+    });
+
+    const isHoldStandalone = isWaitInterruption(normalizedControl) || isWaitInterruption(normalizedTranscript);
+
     // If currently speaking or doing tool work, this is an interruption
     if (this.state === STATE.SPEAKING || this.state === STATE.TOOL_WORK) {
-      await this._handleInterruption(normalizedTranscript, { rawTranscript, normalizedTranscript, detectedMedicalTerms });
+      await this._handleInterruption(normalizedControl || normalizedTranscript, { rawTranscript, normalizedTranscript, detectedMedicalTerms });
       return;
     }
+
+    // If a standalone hold/wait command is received while already in LISTENING state, do NOT dispatch to LLM
+    if (isHoldStandalone) {
+      console.log(`[Orchestrator:${this.sessionId}] Standalone hold/wait command received ("${normalizedControl || normalizedTranscript}"), awaiting user continuation without LLM call`);
+      this._setState(STATE.LISTENING);
+      return;
+    }
+
+    // Strip leading conversational control prefix if user started with hold word then continued
+    const cleanedText = stripControlPrefix(normalizedControl || normalizedTranscript);
+    const textToProcess = cleanedText || normalizedTranscript;
 
     // Safety guard: ambiguous utterances must prompt for clarification rather than assuming severe diagnoses
     if (isAmbiguous && clarificationPrompt && detectedMedicalTerms.length === 0) {
@@ -396,7 +422,7 @@ class Orchestrator extends EventEmitter {
     }
 
     // Normal flow: user finished speaking
-    await this._processUserInput(normalizedTranscript, { rawTranscript, normalizedTranscript, detectedMedicalTerms });
+    await this._processUserInput(textToProcess, { rawTranscript, normalizedTranscript, detectedMedicalTerms });
   }
 
   /**
@@ -426,7 +452,7 @@ class Orchestrator extends EventEmitter {
   /**
    * Handle an interruption: user spoke while we were speaking or working
    */
-  async _handleInterruption(newText) {
+  async _handleInterruption(newText, meta = {}) {
     const interruptedGenId = this.currentGenerationId;
     console.log(`[Orchestrator:${this.sessionId}] INTERRUPTION detected during ${this.state}, invalidating gen:${interruptedGenId}`);
 
@@ -451,31 +477,22 @@ class Orchestrator extends EventEmitter {
     this.latency.recordEvent(this.sessionId, interruptedGenId, 'stale_fenced');
     this.latency.calculateMetrics(this.sessionId, interruptedGenId);
 
-    // 6. Check for quick pause/hold commands (English "wait", Tamil "பொறு", Hindi "रुको")
-    const lower = newText.toLowerCase().trim();
-    const isHold = lower === 'wait' || lower === 'hold on' || lower === 'one second' || lower === 'stop' || lower === 'just a second' ||
-      lower === 'poru' || lower === 'nillu' || lower === 'niruthu' || newText.includes('பொறு') || newText.includes('நில்') || newText.includes('நிறுத்து') || newText.includes('காத்திரு') || newText.includes('ஒரு நிமிடம்') ||
-      lower === 'ruko' || lower === 'rukiye' || lower === 'thahro' || newText.includes('रुको') || newText.includes('रुकिए') || newText.includes('ठहरो') || newText.includes('ठहरिए') || newText.includes('बंद करो') || newText.includes('एक मिनट');
+    // 6. Check for quick pause/hold commands (English "wait", Tamil "பொரு" / "பொறு", Hindi "रुको")
+    const isHold = isWaitInterruption(newText);
 
     if (isHold) {
-      const ackGenId = this._newGeneration();
-      let ack = "I'm listening, take your time.";
-      if (this.language === 'ta') {
-        ack = "நான் கேட்கிறேன், பொறுமையாக சொல்லுங்கள்.";
-      } else if (this.language === 'hi') {
-        ack = "मैं सुन रहा हूँ, आराम से बताइए.";
-      }
-      this.llm.addUserMessage(newText);
-      this.llm.addAssistantMessage(ack);
-      this.sendToClient({ type: 'transcript', role: 'user', text: newText });
-      this.sendToClient({ type: 'transcript', role: 'assistant', text: ack });
-      await this._synthesizeAndPlay(ack, ackGenId, this.activeAbortController.signal);
+      console.log(`[Orchestrator:${this.sessionId}] Pure hold command ("${newText}") during interruption: halting audio and entering quiet wait without LLM call or assistant response`);
+      this.currentGenerationId = null;
       this._setState(STATE.LISTENING);
       return;
     }
 
+    // Strip leading conversational hold / control prefix before medical processing if followed by substantive speech
+    const cleanedText = stripControlPrefix(newText);
+    const textToProcess = cleanedText || newText;
+
     // 7. Process the new input with a fresh generation
-    await this._processUserInput(newText);
+    await this._processUserInput(textToProcess, meta);
   }
 
   /**
@@ -536,7 +553,12 @@ class Orchestrator extends EventEmitter {
       this.llm.accumulatedSymptoms = this.accumulatedSymptoms;
     }
     const detected = isSymptomIntent ? [...this.accumulatedSymptoms] : [];
-    const isOnlyFever = detected.length === 1 && detected[0].toLowerCase() === 'fever';
+    const isOnlyFever = detected.length === 1 && (
+      detected[0].toLowerCase() === 'fever' ||
+      detected[0] === 'காய்ச்சல்' ||
+      detected[0] === 'புखार' ||
+      detected[0] === 'बुखार'
+    );
 
     if (detected.length > 0 && !isOnlyFever) {
       (async () => {

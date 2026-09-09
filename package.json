@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node test/voice-flow.test.js && node test/stress-test.js && node test/regression-intent.test.js && node test/production-bugfix.test.js && node test/conversation-flow.test.js && node test/nearby-gps-proximity.test.js",
+    "test": "node test/voice-interruption-hold.test.js && node test/voice-turn-manager.test.js && node test/voice-flow.test.js && node test/stress-test.js && node test/regression-intent.test.js && node test/production-bugfix.test.js && node test/conversation-flow.test.js && node test/nearby-gps-proximity.test.js",
     "test:intent": "node test/regression-intent.test.js",
     "benchmark": "node benchmarks/benchmark.js",
     "package": "node scripts/package-submission.js"

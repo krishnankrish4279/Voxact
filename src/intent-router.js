@@ -34,29 +34,96 @@
 };
 
 /**
- * Check if the text is a wait / interruption command
+ * Normalize colloquial conversational controls and tolerate ASR variants (e.g. "ஒரு" -> "பொரு")
+ * ONLY when context indicates conversational hold/interruption, never for quantity questions.
  */
-function isWaitInterruption(text) {
+function normalizeConversationalControl(rawText, context = {}) {
+  if (!rawText || typeof rawText !== 'string') return rawText;
+  const trimmed = rawText.trim();
+  const lower = trimmed.toLowerCase();
+
+  const {
+    assistantSpeaking = false,
+    immediatelyAfterAssistant = false,
+    pendingQuestion = null,
+    lastAssistantMsg = ''
+  } = context;
+
+  // Check if assistant asked a quantity question (e.g. "how many", "ஒரு symptom மட்டும்", "ஒன்றா அல்லது பலவா")
+  const combinedContext = ((pendingQuestion?.questionText || '') + ' ' + (lastAssistantMsg || '')).toLowerCase();
+  const isQuantityQuestion = /(?:^|\s|[.,!?])(?:how\s+many|how\s+much|எத்தனை|ஒன்றா|ஒரு\s*symptom\s*மட்டும்|ஒரு\s*அறிகுறி\s*மட்டும்|ஒன்று\s*மட்டுமா|ஒரு\s*மட்டும்)(?:$|\s|[.,!?])/i.test(combinedContext);
+
+  // If ASR produced "ஒரு" or colloquial "போறு", "பொற", "போரு"
+  if (trimmed === 'ஒரு' || trimmed === 'ஒரு ' || lower === 'oru') {
+    // Only interpret as "பொரு" (wait/hold) if assistant is speaking or right after assistant, AND NOT answering a quantity question
+    if ((assistantSpeaking || immediatelyAfterAssistant) && !isQuantityQuestion) {
+      return 'பொரு';
+    }
+  }
+
+  // Common colloquial variants of poru
+  if (/^(?:போறு|பொற|போரு)$/i.test(trimmed)) {
+    return 'பொரு';
+  }
+
+  return rawText;
+}
+
+/**
+ * Strip leading conversational hold / control prefixes before clinical medical triage.
+ * E.g. "பொரு, எனக்கு வேற ஒரு symptom இருக்கு" -> "எனக்கு வேற ஒரு symptom இருக்கு"
+ */
+function stripControlPrefix(text) {
+  if (!text || typeof text !== 'string') return '';
+  return text
+    .refunction isWaitInterruption(text) {
   if (!text) return false;
   const lower = text.toLowerCase().trim();
   const raw = text.trim();
 
-  // Pure or leading wait phrases
-  if (/^(?:wait|wait\s+wait|wait\s+wait\s+wait|please\s+wait|hold\s+on|just\s+hold\s+on|hang\s+on|hold\s+up|one\s+second|just\s+a\s+second|just\s+a\s+minute|one\s+minute|stop|i'm\s+still\s+talking|im\s+still\s+talking|give\s+me\s+a\s+sec(?:ond)?)\b/i.test(lower)) {
-    // If followed by an actual symptom, it's not a pure wait command (e.g. "wait for a second my head hurts")
-    if (/\b(?:headache|head\s*hurts|pain|hurts|chest|stomach|fever|vomit|dizzy|breath)\b/i.test(lower)) {
-      return false;
-    }
+  // If there is substantive speech remaining after stripping conversational control prefixes,
+  // this is a full utterance with a control prefix (e.g. "Wait, I want a hospital instead", "பொரு, எனக்கு ஒரு வேற symptom இருக்கு"), NOT a pure hold command.
+  const stripped = stripControlPrefix(text);
+  if (stripped && stripped.length > 0) {
+    return false;
+  }
+
+  // Pure English wait phrases
+  if (/^(?:wait|wait\s+wait|wait\s+wait\s+wait|please\s+wait|hold\s+on|just\s+hold\s+on|hang\s+on|hold\s+up|one\s+second|just\s+a\s+second|just\s+a\s+minute|one\s+minute|stop|i'm\s+still\s+talking|im\s+still\s+talking|give\s+me\s+a\s+sec(?:ond)?)$/i.test(lower)) {
     return true;
   }
 
-  // Tamil wait phrases
-  if (/^(?:poru|nillu|niruthu|oru\s+nimisham|irunga|kaathiru)\b/i.test(lower)) return true;
-  if (/^(?:பொறு|பொறுமை|நில்|நிறுத்து|காத்திரு|ஒரு\s*நிமிடம்|இருங்க)(?:\s|$|[.,!?])/i.test(raw) || /^(?:பொறு|பொறுமை|நில்|நிறுத்து|காத்திரு|ஒரு\s*நிமிடம்|இருங்க)$/i.test(raw)) return true;
+  // Tamil wait phrases (colloquial and formal)
+  if (/^(?:poru|porru|pohru|konjam\s+poru|nillu|niruthu|oru\s+nimisham|irunga|kaathiru)$/i.test(lower)) {
+    return true;
+  }
+  if (/^(?:கொஞ்சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|பொறுமை|நில்|நில்லு|நில்லுங்க|நிறுத்து|காத்திரு|ஒரு\s*நிமிடம்|ஒரு\s*நிமிஷம்|இரு|இருங்க)$/i.test(raw)) {
+    return true;
+  }
 
   // Hindi wait phrases
-  if (/^(?:ruko|rukiye|thahro|thahariye|ek\s+minute|ek\s+second|zara\s+ruko)\b/i.test(lower)) return true;
-  if (/^(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड|जरा\s*रुको)(?:\s|$|[.,!?])/i.test(raw) || /^(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड|जरा\s*रुको)$/i.test(raw)) return true;
+  if (/^(?:ruko|rukiye|thahro|thahariye|ek\s+minute|ek\s+second|zara\s+ruko)$/i.test(lower)) {
+    return true;
+  }
+  if (/^(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड|जरा\s*रुको)$/i.test(raw)) {
+    return true;
+  }
+
+  return false;
+}�சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|பொறுமை|நில்|நில்லு|நிறுத்து|காத்திரு|ஒரு\s*நிமிடம்|ஒரு\s*நிமிஷம்|இருங்க)$/i.test(raw) ||
+      (/^(?:கொஞ்சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|பொறுமை|நில்|நில்லு|நிறுத்து|காத்திரு|ஒரு\s*நிமிடம்|ஒரு\s*நிமிஷம்|இருங்க)(?:\s|$|[.,!?])/i.test(raw) && !hasSymptom)) {
+    return true;
+  }
+
+  // Hindi wait phrases
+  if (/^(?:ruko|rukiye|thahro|thahariye|ek\s+minute|ek\s+second|zara\s+ruko)$/i.test(lower) ||
+      (/^(?:ruko|rukiye|thahro|thahariye|ek\s+minute|ek\s+second|zara\s+ruko)\b/i.test(lower) && !hasSymptom)) {
+    return true;
+  }
+  if (/^(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड|जरा\s*रुको)$/i.test(raw) ||
+      (/^(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड|जरा\s*रुको)(?:\s|$|[.,!?])/i.test(raw) && !hasSymptom)) {
+    return true;
+  }
 
   return false;
 }
@@ -556,6 +623,8 @@ module.exports = {
   extractNamedFacility,
   isPendingFacilityOffer,
   isWaitInterruption,
+  normalizeConversationalControl,
+  stripControlPrefix,
   extractFacilitySelection,
   isMapRequest,
   isDirectionsRequest,

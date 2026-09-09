@@ -138,7 +138,7 @@
 
   // ─── Interruption Phrase Detection ─────────────────────────────
   const INTERRUPTION_PATTERNS = [
-    /\bwait\b/i,
+    /\bwait(?:\s+wait)?\b/i,
     /\bstop\b/i,
     /\bhold\s+on\b/i,
     /\bhang\s+on\b/i,
@@ -146,11 +146,50 @@
     /\bno\b/i,
     /\bactually\b/i,
     /\bcancel\b/i,
-    // Tamil interruption keywords ("பொறு", "நில்", "வேண்டாம்", "இரு")
-    /(?:^|\s)(?:பொறு(?:ங்கள்)?|நில்லு?(?:ங்கள்)?|வேண்டாம்|இரு|தடை)(?:$|\s)/,
-    // Hindi interruption keywords ("रुको", "रुकिए", "ठहरो", "नहीं", "बस")
-    /(?:^|\s)(?:रुको|रुकिए|ठहरो|ठहरिए|नहीं|बस|थोड़ा\s+रुको)(?:$|\s)/
+    /\b(?:one\s+second|one\s+minute|just\s+a\s+sec(?:ond)?|just\s+a\s+minute)\b/i,
+    // Tamil interruption & colloquial hold keywords ("பொரு", "பொறு", "போறு", "கொஞ்சம் பொரு", "ஒரு நிமிஷம்", "இரு", "நில்")
+    /(?:^|\s)(?:(?:கொஞ்சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு)|ஒரு\s*நிமிஷம்|ஒரு\s*நிமிடம்|இரு(?:ங்கள்)?|நில்லு?(?:ங்கள்)?|வேண்டாம்|தடை)(?:$|\s)/,
+    // Hindi interruption keywords ("रुको", "रुकिए", "ठहरो", "नहीं", "बस", "एक मिनट", "एक सेकंड")
+    /(?:^|\s)(?:(?:जरा\s+)?(?:रुको|रुकिए|ठहरो|ठहरिए)|नहीं|बस|थोड़ा\s+रुको|एक\s*मिनट|एक\s*सेकंड)(?:$|\s)/
   ];
+
+  function stripControlPrefix(text) {
+    if (!text || typeof text !== 'string') return '';
+    return text
+      .replace(/^(?:(?:கொஞ்சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|ஒரு\s*நிமிஷம்|ஒரு\s*நிமிடம்|இரு(?:ங்கள்)?|நில்லு?(?:ங்கள்)?)|(?:wait(?:\s+wait)?|hold\s+on|one\s+second|one\s+minute|just\s+a\s+sec(?:ond)?|just\s+a\s+minute)|(?:जरा\s+)?(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड))\s*[,.\-—:]*\s*/i, '')
+      .trim();
+  }
+
+  function normalizeConversationalControl(rawText, context = {}) {
+    if (!rawText || typeof rawText !== 'string') return rawText;
+    const trimmed = rawText.trim();
+    const lower = trimmed.toLowerCase();
+
+    const {
+      assistantSpeaking = false,
+      immediatelyAfterAssistant = false,
+      pendingQuestion = null,
+      lastAssistantMsg = ''
+    } = context;
+
+    // Check if assistant asked a quantity question (e.g. "how many", "ஒரு symptom மட்டும்", "ஒன்றா அல்லது பலவா")
+    const combinedContext = ((pendingQuestion?.questionText || '') + ' ' + (lastAssistantMsg || '')).toLowerCase();
+    const isQuantityQuestion = /(?:^|\s|[.,!?])(?:how\s+many|how\s+much|எத்தனை|ஒன்றா|ஒரு\s*symptom\s*மட்டும்|ஒரு\s*அறிகுறி\s*மட்டும்|ஒன்று\s*மட்டுமா|ஒரு\s*மட்டும்)(?:$|\s|[.,!?])/i.test(combinedContext);
+
+    // If ASR produced "ஒரு" or colloquial "போறு", "பொற", "போரு"
+    if (trimmed === 'ஒரு' || trimmed === 'ஒரு ' || lower === 'oru') {
+      // Only interpret as "பொரு" (wait/hold) if assistant is speaking or right after assistant, AND NOT answering a quantity question
+      if ((assistantSpeaking || immediatelyAfterAssistant) && !isQuantityQuestion) {
+        return 'பொரு';
+      }
+    }
+
+    if (/^(?:போறு|பொற|போரு)$/i.test(trimmed)) {
+      return 'பொரு';
+    }
+
+    return rawText;
+  }
 
   function normalizeSpeechText(text) {
     if (!text || typeof text !== 'string') return '';
@@ -173,6 +212,34 @@
       }
     }
     return null;
+  }
+
+  function isWaitInterruptionApp(text) {
+    if (!text || typeof text !== 'string') return false;
+    const lower = text.toLowerCase().trim();
+    const raw = text.trim();
+
+    const hasSymptom = /\b(?:headache|head\s*hurts|pain|hurts|chest|stomach|fever|vomit|dizzy|breath)\b/i.test(lower) ||
+      /தலைவலி|நெஞ்சு\s*வலி|வலி|காய்ச்சல்|வாந்தி|மயக்கம்|மூச்சுத்திணறல்|சளி|இருமல்|symptom|அறிகுறி/i.test(raw);
+
+    if (hasSymptom) return false;
+
+    if (/^(?:wait|wait\s+wait|wait\s+wait\s+wait|please\s+wait|hold\s+on|just\s+hold\s+on|hang\s+on|hold\s+up|one\s+second|just\s+a\s+second|just\s+a\s+minute|one\s+minute|stop)$/i.test(lower)) {
+      return true;
+    }
+    if (/^(?:poru|porru|pohru|konjam\s+poru|nillu|niruthu|oru\s+nimisham|irunga|kaathiru)$/i.test(lower)) {
+      return true;
+    }
+    if (/^(?:கொஞ்சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|பொறுமை|நில்|நில்லு|நிறுத்து|காத்திரு|ஒரு\s*நிமிடம்|ஒரு\s*நிமிஷம்|இருங்க)$/i.test(raw)) {
+      return true;
+    }
+    if (/^(?:ruko|rukiye|thahro|thahariye|ek\s+minute|ek\s+second|zara\s+ruko)$/i.test(lower)) {
+      return true;
+    }
+    if (/^(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड|जरा\s*रुको)$/i.test(raw)) {
+      return true;
+    }
+    return false;
   }
 
   function isAssistantSpeaking() {
@@ -1719,7 +1786,8 @@
         break;
 
       case 'audio':
-        if (message.generationId && invalidatedGenerations.has(message.generationId)) {
+        if (message.generationId && (invalidatedGenerations.has(message.generationId) || (currentGenerationId && message.generationId !== currentGenerationId))) {
+          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Audio chunk dropped for stale generation:', message.generationId);
           return;
         }
         currentGenerationId = message.generationId || currentGenerationId;
@@ -1727,11 +1795,20 @@
         break;
 
       case 'transcript':
+        if (message.generationId && (invalidatedGenerations.has(message.generationId) || (currentGenerationId && message.generationId !== currentGenerationId))) {
+          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Transcript dropped for stale generation:', message.generationId);
+          return;
+        }
+        if (message.role === 'assistant') {
+          console.log('[TurnManager] ASSISTANT_RESPONSE:', message.text);
+          console.log('[TurnManager] ANALYSIS_END (genId: ' + (message.generationId || currentGenerationId) + ')');
+        }
         addTranscriptMessage(message.role, message.text);
         break;
 
       case 'transcript_chunk':
-        if (message.generationId && invalidatedGenerations.has(message.generationId)) {
+        if (message.generationId && (invalidatedGenerations.has(message.generationId) || (currentGenerationId && message.generationId !== currentGenerationId))) {
+          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Transcript chunk dropped for stale generation:', message.generationId);
           return;
         }
         appendTranscriptChunk(message.role, message.text);
@@ -1745,9 +1822,12 @@
         break;
 
       case 'fallback_text':
-        if (message.generationId && invalidatedGenerations.has(message.generationId)) {
+        if (message.generationId && (invalidatedGenerations.has(message.generationId) || (currentGenerationId && message.generationId !== currentGenerationId))) {
+          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Fallback text dropped for stale generation:', message.generationId);
           return;
         }
+        console.log('[TurnManager] ASSISTANT_RESPONSE:', message.text);
+        console.log('[TurnManager] ANALYSIS_END (genId: ' + (message.generationId || currentGenerationId) + ')');
         addTranscriptMessage('assistant', message.text);
         if (message.speakBrowser) {
           speakBrowserText(message);
@@ -1755,12 +1835,16 @@
         break;
 
       case 'triage_update':
+        if (message.generationId && (invalidatedGenerations.has(message.generationId) || (currentGenerationId && message.generationId !== currentGenerationId))) {
+          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Triage update dropped for stale generation:', message.generationId);
+          return;
+        }
         handleTriageUpdate(message);
         break;
 
       case 'care_navigation_update':
-        if (message.generationId && invalidatedGenerations.has(message.generationId)) {
-          console.log('[App] Dropping care_navigation_update for invalidated generation:', message.generationId);
+        if (message.generationId && (invalidatedGenerations.has(message.generationId) || (currentGenerationId && message.generationId !== currentGenerationId))) {
+          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Care navigation dropped for stale generation:', message.generationId);
           return;
         }
         if (nearbyCareStatus === 'declined') {
@@ -1847,19 +1931,35 @@
 
   // ─── Speech Turn Controller (Interruption & Silence Handling) ───
 
+  // ─── Speech Turn Controller (Interruption & Silence Handling) ───
+
+  const SHORT_CONVERSATIONAL_CONTROLS = new Set([
+    'ஒரு', 'ம்', 'ஹ்ம்', 'உம்', 'a', 'um', 'uh', 'er', 'ah', 'ஒரு ',
+    'ஆமா', 'ஆமாம்', 'சரி', 'பொரு', 'பொறு', 'போறு', 'பொற', 'போரு', 'கொஞ்சம் பொரு', 'கொஞ்சம் பொறு',
+    'wait', 'wait wait', 'wait wait wait', 'hold on', 'one minute', 'one second', 'just a second', 'just a minute',
+    'ஒரு நிமிஷம்', 'ஒரு நிமிடம்', 'இரு', 'இருங்க',
+    'एक', 'उम', 'अह', 'हाँ', 'ठीक है', 'रुको', 'रुकिए', 'ठहरो', 'एक मिनट'
+  ]);
+
   function createSpeechTurnController(config = {}) {
     const isSpeakingFn = config.isSpeakingFn || isAssistantSpeaking;
     const getAssistantTextFn = config.getAssistantTextFn || null;
+    const getPendingQuestionFn = config.getPendingQuestionFn || null;
     const onAudioHalt = config.onAudioHalt || (() => {});
     const onSendInterruptStart = config.onSendInterruptStart || (() => {});
     const onSubmitSpeech = config.onSubmitSpeech || (() => {});
     const onInterimUpdate = config.onInterimUpdate || (() => {});
-    const silenceTimeoutMs = config.silenceTimeoutMs !== undefined ? config.silenceTimeoutMs : 750;
+    const silenceTimeoutMs = config.silenceTimeoutMs !== undefined ? config.silenceTimeoutMs : 1200;
 
+    let currentTurnBuffer = '';
     let turnFinalText = '';
     let interimText = '';
     let silenceTimer = null;
     let hasInterrupted = false;
+    let turnStarted = false;
+    let interruptionState = 'IDLE'; // 'IDLE' | 'INTERRUPTED_WAITING_FOR_USER' | 'COLLECTING'
+    let lastSpeechTimestamp = null;
+    let lastDetectedControlPhrase = null;
 
     function reset() {
       if (silenceTimer) {
@@ -1867,50 +1967,107 @@
         silenceTimer = null;
       }
       turnFinalText = '';
+      currentTurnBuffer = '';
       interimText = '';
       hasInterrupted = false;
+      turnStarted = false;
+      interruptionState = 'IDLE';
+      lastDetectedControlPhrase = null;
       onInterimUpdate('', false);
     }
 
     function processRecognitionEvent(results, resultIndex = 0) {
+      lastSpeechTimestamp = Date.now();
       let interim = '';
       let newFinal = '';
 
-      for (let i = resultIndex; i < results.length; i++) {
-        const item = results[i];
-        const text = (item && item[0] ? item[0].transcript : (item?.transcript || '')) || '';
-        if (item && item.isFinal) {
+      let items = results;
+      let startIndex = resultIndex;
+      if (results && !Array.isArray(results) && typeof results.length !== 'number') {
+        items = [results];
+        startIndex = 0;
+      }
+
+      for (let i = startIndex; i < (items ? items.length : 0); i++) {
+        const item = items[i];
+        const text = (item && item[0] ? item[0].transcript : (item?.transcript || item?.finalChunk || item?.interim || '')) || '';
+        const isFinal = item && (item.isFinal !== undefined ? item.isFinal : Boolean(item?.finalChunk));
+        if (isFinal) {
           newFinal += text + ' ';
         } else {
           interim += text;
         }
       }
 
-      if (newFinal) {
-        turnFinalText += newFinal;
+      const isSpeaking = isSpeakingFn();
+      const assistantText = getAssistantTextFn ? getAssistantTextFn() : '';
+      const pendingQuestion = getPendingQuestionFn ? getPendingQuestionFn() : null;
+
+      // Contextual normalization of ASR variants (e.g. "ஒரு" -> "பொரு" if assistant is speaking or right after)
+      const rawChunk = (interim || newFinal || '').trim();
+      const normalizedChunk = normalizeConversationalControl(rawChunk, {
+        assistantSpeaking: isSpeaking,
+        pendingQuestion,
+        lastAssistantMsg: assistantText
+      });
+
+      if (newFinal.trim()) {
+        let cleanChunk = newFinal.trim();
+        // If cleanChunk is "ஒரு" and normalized to "பொரு" in interruption context, use "பொரு"
+        if (cleanChunk === 'ஒரு' && normalizedChunk === 'பொரு') {
+          cleanChunk = 'பொரு';
+        }
+
+        if (!turnStarted) {
+          console.log('[TurnManager] TURN_START');
+          turnStarted = true;
+        }
+        if (!turnFinalText.trim()) {
+          turnFinalText = cleanChunk;
+        } else {
+          turnFinalText += ' ' + cleanChunk;
+        }
+        currentTurnBuffer = turnFinalText;
+        console.log('[TurnManager] STT_FINAL:', cleanChunk);
+        console.log('[TurnManager] TURN_BUFFER_APPEND:', cleanChunk, '| Accumulated Buffer:', turnFinalText);
+      }
+
+      if (interim.trim()) {
+        if (!turnStarted) {
+          console.log('[TurnManager] TURN_START');
+          turnStarted = true;
+        }
+        console.log('[TurnManager] STT_INTERIM:', interim.trim());
       }
       interimText = interim;
 
-      const currentSpeech = (turnFinalText + interim).trim();
+      const currentSpeech = (turnFinalText + (interim ? ' ' + interim : '')).trim();
       if (!currentSpeech) return null;
 
-      // Update visible interim speech preview (never sent to triage or /api/chat)
+      // Update visible interim speech preview
       if (onInterimUpdate) {
         onInterimUpdate(currentSpeech, Boolean(interim));
       }
 
       // ── Instant Interim Interruption Detection ──────────────────────
-      const isSpeaking = isSpeakingFn();
       const rawPhrase = (interim || currentSpeech).trim();
-      const assistantText = getAssistantTextFn ? getAssistantTextFn() : '';
-      const isEcho = isSpeaking && assistantText && isEchoText(rawPhrase, assistantText);
-      const detectedPhrase = !isEcho ? detectInterruptionPhrase(rawPhrase) : null;
+      const normalizedPhrase = normalizeConversationalControl(rawPhrase, {
+        assistantSpeaking: isSpeaking,
+        pendingQuestion,
+        lastAssistantMsg: assistantText
+      });
+
+      const isEcho = isSpeaking && assistantText && isEchoText(normalizedPhrase, assistantText);
+      const detectedPhrase = !isEcho ? detectInterruptionPhrase(normalizedPhrase) : null;
       let interruptionTriggered = false;
       let clientHaltMs = null;
 
       if (isSpeaking && detectedPhrase && !hasInterrupted) {
         hasInterrupted = true;
         interruptionTriggered = true;
+        interruptionState = 'INTERRUPTED_WAITING_FOR_USER';
+        lastDetectedControlPhrase = detectedPhrase;
+        console.log('[TurnManager] INTERRUPTION triggered on phrase:', detectedPhrase);
 
         const haltStart = performance.now();
         onAudioHalt(detectedPhrase);
@@ -1921,8 +2078,10 @@
           clientHaltMs,
           text: detectedPhrase
         });
+
+        // Debug logging in exact required schema
+        console.log(`[VOICE] rawTranscript="${rawPhrase}" normalizedTranscript="${normalizedPhrase}" assistantSpeaking=true interruptionDetected=true controlPhrase="${detectedPhrase}" turnBuffer="${turnFinalText || normalizedPhrase}" turnEnd=false submittedToLLM=false`);
       } else if (isEcho) {
-        // Acoustic feedback from device speakers detected — discard so assistant is not interrupted by its own voice
         interimText = '';
         return {
           currentSpeech: '',
@@ -1935,8 +2094,6 @@
       }
 
       // ── Gated Turn Finalization (Strictly on isFinal === true) ─────
-      // Interim speech must NEVER start a submission timer or trigger premature triage.
-      // If the user resumes speaking (new interim arrives), cancel any pending debounce timer.
       if (silenceTimer) {
         clearTimeout(silenceTimer);
         silenceTimer = null;
@@ -1947,7 +2104,6 @@
         resolveSubmit = resolve;
       });
 
-      // ONLY start the debounce finalization timer if we have accumulated final speech
       if (turnFinalText.trim().length > 0) {
         silenceTimer = setTimeout(() => {
           const finalTextToSubmit = turnFinalText.trim();
@@ -1960,9 +2116,42 @@
               resolveSubmit(null);
               return;
             }
-            onSubmitSpeech(finalTextToSubmit);
+
+            const normalizedFinal = normalizeConversationalControl(finalTextToSubmit, {
+              assistantSpeaking: currentlySpeaking || hasInterrupted,
+              pendingQuestion,
+              lastAssistantMsg: curAssistantText
+            });
+
+            // Check if user utterance is a pure conversational control / hesitation token:
+            const isPureControl = SHORT_CONVERSATIONAL_CONTROLS.has(normalizedFinal.toLowerCase()) ||
+              isWaitInterruptionApp(normalizedFinal);
+
+            // Valid answer check (e.g. answering fever inquiry with "ஆமா", or answering quantity question with "ஒரு")
+            const isValidAnswer = pendingQuestion && (
+              (pendingQuestion.symptom === 'fever' && (normalizedFinal === 'ஆமா' || normalizedFinal === 'ஆமாம்' || normalizedFinal === 'சரி' || normalizedFinal === 'yes')) ||
+              (/\b(how\s+many|எத்தனை|ஒன்றா)\b/i.test(pendingQuestion.questionText || '') && (normalizedFinal === 'ஒரு' || normalizedFinal === '1' || normalizedFinal === 'one'))
+            );
+
+            if (isPureControl && !isValidAnswer) {
+              console.log(`[VOICE] rawTranscript="${finalTextToSubmit}" normalizedTranscript="${normalizedFinal}" assistantSpeaking=${currentlySpeaking} interruptionDetected=${hasInterrupted} controlPhrase="${lastDetectedControlPhrase || normalizedFinal}" turnBuffer="${finalTextToSubmit}" turnEnd=false submittedToLLM=false`);
+              console.log('[TurnManager] Conversational hold/control phrase held in buffer ("' + normalizedFinal + '"), awaiting user continuation without LLM dispatch');
+              interruptionState = 'INTERRUPTED_WAITING_FOR_USER';
+              // Hold in buffer, DO NOT submit to LLM or trigger medical analysis!
+              resolveSubmit(null);
+              return;
+            }
+
+            // Substantive speech turn: strip leading control phrase if user spoke hold prefix before continuation
+            const cleanMedicalText = stripControlPrefix(normalizedFinal) || normalizedFinal;
+
+            console.log(`[VOICE] rawTranscript="${finalTextToSubmit}" normalizedTranscript="${cleanMedicalText}" assistantSpeaking=false interruptionDetected=false controlPhrase="${lastDetectedControlPhrase || ''}" turnBuffer="${finalTextToSubmit}" turnEnd=true submittedToLLM=true`);
+            console.log('[TurnManager] TURN_END:', cleanMedicalText);
+            console.log('[TurnManager] USER_TURN_SUBMITTED:', cleanMedicalText);
+
+            onSubmitSpeech(cleanMedicalText);
             reset();
-            resolveSubmit(finalTextToSubmit);
+            resolveSubmit(cleanMedicalText);
           } else {
             resolveSubmit(null);
           }
@@ -1985,7 +2174,9 @@
       processRecognitionEvent,
       reset,
       isInterrupted: () => hasInterrupted,
-      getCurrentAccumulation: () => (turnFinalText + interimText).trim(),
+      getInterruptionState: () => interruptionState,
+      getCurrentAccumulation: () => (turnFinalText + (interimText ? ' ' + interimText : '')).trim(),
+      getTurnBuffer: () => currentTurnBuffer || turnFinalText,
     };
   }
 
@@ -2049,11 +2240,11 @@
 
         // Turn deduplication and single-flight enforcement
         if (isSubmittingTurn) {
-          console.warn('[App] Turn submission already in-flight, dropping duplicate:', clean);
+          console.warn('[TurnManager] DUPLICATE_TURN_DROPPED: Turn submission already in-flight:', clean);
           return;
         }
-        if (clean === lastSubmittedTranscript && (Date.now() - lastSubmittedTime) < 1500) {
-          console.warn('[App] Dropping duplicate speech turn submission:', clean);
+        if (clean === lastSubmittedTranscript && (Date.now() - lastSubmittedTime) < 2000) {
+          console.warn('[TurnManager] DUPLICATE_TURN_DROPPED: Dropping duplicate speech turn submission within debounce window:', clean);
           return;
         }
 
@@ -2075,7 +2266,7 @@
         currentGenerationId = 'gen_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7);
         currentAssistantBubble = null;
 
-        console.log('[App] Submitting complete user speech (turnId: ' + turnId + ', genId: ' + currentGenerationId + '):', finalTextToSubmit);
+        console.log('[TurnManager] ANALYSIS_START (turnId: ' + turnId + ', genId: ' + currentGenerationId + '):', finalTextToSubmit);
 
         // Normalize medical speech (Tamil, Hindi, English)
         let normalized = {
@@ -2161,7 +2352,7 @@
           });
         }
       },
-      silenceTimeoutMs: 750,
+      silenceTimeoutMs: 1200,
     });
 
     recognition.onresult = (event) => {
@@ -2533,6 +2724,8 @@
     module.exports = {
       detectInterruptionPhrase,
       normalizeSpeechText,
+      normalizeConversationalControl,
+      stripControlPrefix,
       isAssistantSpeaking,
       createSpeechTurnController,
       INTERRUPTION_PATTERNS,
