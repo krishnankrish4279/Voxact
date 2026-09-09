@@ -104,6 +104,7 @@
   let lastSubmittedTurnId = null;
   let lastSubmittedTime = 0;
   let hasStartedInitialSession = false;
+  const pendingTurnQueue = [];
 
   const LANGUAGE_CONFIGS = {
     en: {
@@ -1215,77 +1216,11 @@
         normalized = MedicalTranscriber.normalizeMedicalSpeech(text, currentLanguage);
       }
       const displayText = normalized.normalizedTranscript || text;
-      addTranscriptMessage('user', displayText);
+      // 1. Explicit UI message rendering
+      renderUserMessage(displayText);
 
-      const turnId = 'turn_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
-      isSubmittingTurn = true;
-      lastSubmittedTranscript = text.trim().toLowerCase();
-      lastSubmittedTurnId = turnId;
-      lastSubmittedTime = Date.now();
-
-      console.log('[TurnTelemetry]', {
-        turnId,
-        rawTranscript: text,
-        finalTranscript: displayText,
-        pendingActionBefore: pendingAction,
-        requestStartedAt: new Date().toISOString(),
-      });
-
-      if (isClientNegative(displayText)) {
-        if (pendingAction || nearbyCareStatus === 'pending' || displayText.toLowerCase().includes('clinic') || displayText.toLowerCase().includes('hospital') || displayText.includes('வேண்டாம்') || displayText.includes('இல்ல') || displayText.includes('नहीं')) {
-          nearbyCareStatus = 'declined';
-          pendingAction = null;
-          clearCareFacilities('declined');
-        }
-      } else if (isClientAffirmative(displayText)) {
-        if (pendingAction || nearbyCareStatus === 'pending') {
-          nearbyCareStatus = 'accepted';
-          pendingAction = null;
-        }
-      }
-
-      const lowerText = displayText.toLowerCase().trim();
-      if (/\b(?:share\s+(?:the\s+)?location\s+in\s+map|share\s+location|show\s+in\s+map|open\s+map|show\s+map)\b/i.test(lowerText)) {
-        if (latestCareFacilities.length > 0) {
-          selectFacilityByIndex(0, { zoom: 15 });
-        }
-      } else if (/\b(?:share|show|put|select|take\s+me\s+to|navigate\s+to|zoom\s+to|focus\s+on)?\s*(?:the\s+)?(?:facility\s+|hospital\s+|clinic\s+|option\s+)?(?:number|#|no\.?)?\s*(one|two|three|four|five|1|2|3|4|5|first|second|third|fourth|fifth)\b/i.test(lowerText)) {
-        const numMap = { 'one': 0, '1': 0, 'first': 0, 'two': 1, '2': 1, 'second': 1, 'three': 2, '3': 2, 'third': 2, 'four': 3, '4': 3, 'fourth': 3, 'five': 4, '5': 4, 'fifth': 4 };
-        const m = lowerText.match(/\b(?:number|#|no\.?)?\s*(one|two|three|four|five|1|2|3|4|5|first|second|third|fourth|fifth)\b/i);
-        if (m && numMap[m[1]] !== undefined) {
-          selectFacilityByIndex(numMap[m[1]], { zoom: 15 });
-        }
-      }
-
-      if (useHttpTransport) {
-        // HTTP/SSE mode: send via POST /api/chat
-        sendChatHTTP(displayText, { turnId });
-      } else {
-        // WebSocket mode: send via WS
-        sendMessage({
-          type: 'user_speech',
-          text: displayText,
-          rawTranscript: text,
-          normalizedTranscript: displayText,
-          medicalTerms: normalized.detectedMedicalTerms || [],
-          isAmbiguous: normalized.isAmbiguous,
-          location: currentLocation,
-          pendingAction,
-          nearbyCareStatus,
-          turnId,
-        });
-      }
-
-      const localSymptoms = extractClientSymptoms(displayText);
-      if (localSymptoms.length > 0 && symptomTags) {
-        symptomTags.innerHTML = '';
-        localSymptoms.forEach(s => {
-          const tag = document.createElement('span');
-          tag.className = 'symptom-tag';
-          tag.textContent = '• ' + s;
-          symptomTags.appendChild(tag);
-        });
-      }
+      // 2. Explicit backend turn submission
+      submitUserTurn(text, { displayText, normalized });
     }
 
     if (textInputForm) {
@@ -1682,6 +1617,13 @@
       useHttpTransport = false;
       setConnectionStatus('connected', 'Connected');
       console.log('[App] WebSocket connected');
+
+      // Flush any queued turns upon connection
+      while (pendingTurnQueue.length > 0) {
+        const queuedMsg = pendingTurnQueue.shift();
+        console.log(`[VOICE] TURN_FLUSHED turnId=${queuedMsg.turnId || 'none'} text="${queuedMsg.text || ''}"`);
+        sendMessage(queuedMsg);
+      }
     };
 
     ws.onmessage = (event) => {
@@ -1734,6 +1676,15 @@
     setConnectionStatus('connected', 'HTTP Connected');
     console.log('[App] Using HTTP/SSE transport (serverless mode)');
 
+    // Flush any pending queued turns to HTTP
+    while (pendingTurnQueue.length > 0) {
+      const queuedMsg = pendingTurnQueue.shift();
+      console.log(`[VOICE] TURN_FLUSHED turnId=${queuedMsg.turnId || 'none'} text="${queuedMsg.text || ''}"`);
+      if (queuedMsg.type === 'user_speech') {
+        sendChatHTTP(queuedMsg.text, { turnId: queuedMsg.turnId, generationId: queuedMsg.generationId });
+      }
+    }
+
     // If session was being started, continue via HTTP
     if (isSessionStarted) {
       startSessionHTTP();
@@ -1778,6 +1729,11 @@
         console.log('[App] WebSocket nearbyCareStatus updated to:', nearbyCareStatus);
         break;
 
+      case 'user_turn_received':
+        console.log(`[VOICE] BACKEND_ACK turnId=${message.turnId || ''}`);
+        isSubmittingTurn = false;
+        break;
+
       case 'done':
         isSubmittingTurn = false;
         // HTTP/SSE transport: conversation complete, update history
@@ -1800,31 +1756,36 @@
         break;
 
       case 'audio':
-        if (message.generationId && (invalidatedGenerations.has(message.generationId) || (currentGenerationId && message.generationId !== currentGenerationId))) {
-          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Audio chunk dropped for stale generation:', message.generationId);
+        if (message.generationId && invalidatedGenerations.has(message.generationId)) {
+          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Audio chunk dropped for invalidated generation:', message.generationId);
           return;
         }
         currentGenerationId = message.generationId || currentGenerationId;
+        console.log(`[VOICE] AUDIO_PLAY generationId="${message.generationId || currentGenerationId || ''}" text="${message.text || ''}"`);
         handleAudioChunk(message);
         break;
 
       case 'transcript':
-        if (message.generationId && (invalidatedGenerations.has(message.generationId) || (currentGenerationId && message.generationId !== currentGenerationId))) {
-          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Transcript dropped for stale generation:', message.generationId);
+        if (message.generationId && invalidatedGenerations.has(message.generationId)) {
+          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Transcript dropped for invalidated generation:', message.generationId);
           return;
         }
+        currentGenerationId = message.generationId || currentGenerationId;
         if (message.role === 'assistant') {
+          console.log(`[VOICE] ASSISTANT_RESPONSE text="${message.text || ''}"`);
           console.log('[TurnManager] ASSISTANT_RESPONSE:', message.text);
           console.log('[TurnManager] ANALYSIS_END (genId: ' + (message.generationId || currentGenerationId) + ')');
+          isSubmittingTurn = false;
         }
         addTranscriptMessage(message.role, message.text);
         break;
 
       case 'transcript_chunk':
-        if (message.generationId && (invalidatedGenerations.has(message.generationId) || (currentGenerationId && message.generationId !== currentGenerationId))) {
-          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Transcript chunk dropped for stale generation:', message.generationId);
+        if (message.generationId && invalidatedGenerations.has(message.generationId)) {
+          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Transcript chunk dropped for invalidated generation:', message.generationId);
           return;
         }
+        currentGenerationId = message.generationId || currentGenerationId;
         appendTranscriptChunk(message.role, message.text);
         break;
 
@@ -1836,31 +1797,37 @@
         break;
 
       case 'fallback_text':
-        if (message.generationId && (invalidatedGenerations.has(message.generationId) || (currentGenerationId && message.generationId !== currentGenerationId))) {
-          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Fallback text dropped for stale generation:', message.generationId);
+        if (message.generationId && invalidatedGenerations.has(message.generationId)) {
+          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Fallback text dropped for invalidated generation:', message.generationId);
           return;
         }
+        currentGenerationId = message.generationId || currentGenerationId;
+        console.log(`[VOICE] ASSISTANT_RESPONSE text="${message.text || ''}"`);
         console.log('[TurnManager] ASSISTANT_RESPONSE:', message.text);
         console.log('[TurnManager] ANALYSIS_END (genId: ' + (message.generationId || currentGenerationId) + ')');
+        isSubmittingTurn = false;
         addTranscriptMessage('assistant', message.text);
         if (message.speakBrowser) {
+          console.log(`[VOICE] AUDIO_PLAY generationId="${message.generationId || currentGenerationId || ''}" text="${message.text || ''}"`);
           speakBrowserText(message);
         }
         break;
 
       case 'triage_update':
-        if (message.generationId && (invalidatedGenerations.has(message.generationId) || (currentGenerationId && message.generationId !== currentGenerationId))) {
-          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Triage update dropped for stale generation:', message.generationId);
+        if (message.generationId && invalidatedGenerations.has(message.generationId)) {
+          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Triage update dropped for invalidated generation:', message.generationId);
           return;
         }
+        currentGenerationId = message.generationId || currentGenerationId;
         handleTriageUpdate(message);
         break;
 
       case 'care_navigation_update':
-        if (message.generationId && (invalidatedGenerations.has(message.generationId) || (currentGenerationId && message.generationId !== currentGenerationId))) {
-          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Care navigation dropped for stale generation:', message.generationId);
+        if (message.generationId && invalidatedGenerations.has(message.generationId)) {
+          console.log('[TurnManager] STALE_RESPONSE_DROPPED: Care navigation dropped for invalidated generation:', message.generationId);
           return;
         }
+        currentGenerationId = message.generationId || currentGenerationId;
         if (nearbyCareStatus === 'declined') {
           console.log('[App] Dropping care_navigation_update: nearby care is declined');
           return;
@@ -1974,6 +1941,7 @@
     let interruptionState = 'IDLE'; // 'IDLE' | 'INTERRUPTED_WAITING_FOR_USER' | 'COLLECTING'
     let lastSpeechTimestamp = null;
     let lastDetectedControlPhrase = null;
+    let lastFinalProcessedIndex = -1;
 
     function reset() {
       if (silenceTimer) {
@@ -1987,7 +1955,76 @@
       turnStarted = false;
       interruptionState = 'IDLE';
       lastDetectedControlPhrase = null;
+      lastFinalProcessedIndex = -1;
       onInterimUpdate('', false);
+    }
+
+    function finalizePendingTurn(resolveSubmit = null) {
+      const finalTextToSubmit = turnFinalText.trim();
+      if (!finalTextToSubmit) {
+        if (resolveSubmit) resolveSubmit(null);
+        return;
+      }
+
+      const currentlySpeaking = isSpeakingFn();
+      const curAssistantText = getAssistantTextFn ? getAssistantTextFn() : '';
+      const pendingQuestion = getPendingQuestionFn ? getPendingQuestionFn() : null;
+
+      if (currentlySpeaking && curAssistantText && isEchoText(finalTextToSubmit, curAssistantText)) {
+        console.log('[App] Filtered out acoustic speaker bleed:', finalTextToSubmit);
+        reset();
+        if (resolveSubmit) resolveSubmit(null);
+        return;
+      }
+
+      const normalizedFinal = normalizeConversationalControl(finalTextToSubmit, {
+        assistantSpeaking: currentlySpeaking || hasInterrupted,
+        pendingQuestion,
+        lastAssistantMsg: curAssistantText
+      });
+
+      // Check if user utterance is a pure conversational control / hesitation token:
+      const isPureControl = SHORT_CONVERSATIONAL_CONTROLS.has(normalizedFinal.toLowerCase()) ||
+        isWaitInterruptionApp(normalizedFinal);
+
+      // Valid answer check (e.g. answering fever inquiry with "ஆமா", or answering quantity question with "ஒரு")
+      const isValidAnswer = pendingQuestion && (
+        (pendingQuestion.symptom === 'fever' && (normalizedFinal === 'ஆமா' || normalizedFinal === 'ஆமாம்' || normalizedFinal === 'சரி' || normalizedFinal === 'yes')) ||
+        (/\b(how\s+many|எத்தனை|ஒன்றா)\b/i.test(pendingQuestion.questionText || '') && (normalizedFinal === 'ஒரு' || normalizedFinal === '1' || normalizedFinal === 'one'))
+      );
+
+      if (isPureControl && !isValidAnswer) {
+        console.log(`[VOICE] rawTranscript="${finalTextToSubmit}" normalizedTranscript="${normalizedFinal}" assistantSpeaking=${currentlySpeaking} interruptionDetected=${hasInterrupted} controlPhrase="${lastDetectedControlPhrase || normalizedFinal}" turnBuffer="${finalTextToSubmit}" turnEnd=false submittedToLLM=false`);
+        console.log('[TurnManager] Conversational hold/control phrase held in buffer ("' + normalizedFinal + '"), awaiting user continuation without LLM dispatch');
+        interruptionState = 'INTERRUPTED_WAITING_FOR_USER';
+        // Hold in buffer, DO NOT submit to LLM or trigger medical analysis!
+        if (resolveSubmit) resolveSubmit(null);
+        return;
+      }
+
+      // Substantive speech turn: strip leading control phrase if user spoke hold prefix before continuation
+      const cleanMedicalText = stripControlPrefix(normalizedFinal) || normalizedFinal;
+
+      console.log(`[VOICE] TURN_END transcript="${finalTextToSubmit}"`);
+      console.log(`[VOICE] USER_TURN_SUBMITTED transcript="${cleanMedicalText}"`);
+      console.log(`[VOICE] rawTranscript="${finalTextToSubmit}" normalizedTranscript="${cleanMedicalText}" assistantSpeaking=false interruptionDetected=false controlPhrase="${lastDetectedControlPhrase || ''}" turnBuffer="${finalTextToSubmit}" turnEnd=true submittedToLLM=true`);
+      console.log('[TurnManager] TURN_END:', cleanMedicalText);
+      console.log('[TurnManager] USER_TURN_SUBMITTED:', cleanMedicalText);
+
+      onSubmitSpeech(cleanMedicalText);
+      reset();
+      if (resolveSubmit) resolveSubmit(cleanMedicalText);
+    }
+
+    function flushPendingTurn() {
+      if (silenceTimer && turnFinalText.trim().length > 0) {
+        const elapsed = lastSpeechTimestamp ? (Date.now() - lastSpeechTimestamp) : 0;
+        if (elapsed >= 300) {
+          clearTimeout(silenceTimer);
+          silenceTimer = null;
+          finalizePendingTurn();
+        }
+      }
     }
 
     function processRecognitionEvent(results, resultIndex = 0) {
@@ -2001,6 +2038,8 @@
         items = [results];
         startIndex = 0;
       }
+
+      console.log('[VOICE] STT_RESULT', { count: items ? items.length : 0, resultIndex: startIndex });
 
       for (let i = startIndex; i < (items ? items.length : 0); i++) {
         const item = items[i];
@@ -2038,12 +2077,14 @@
         }
         if (!turnFinalText.trim()) {
           turnFinalText = cleanChunk;
-        } else {
+        } else if (!turnFinalText.endsWith(cleanChunk)) {
           turnFinalText += ' ' + cleanChunk;
         }
         currentTurnBuffer = turnFinalText;
         console.log('[TurnManager] STT_FINAL:', cleanChunk);
         console.log('[TurnManager] TURN_BUFFER_APPEND:', cleanChunk, '| Accumulated Buffer:', turnFinalText);
+        console.log(`[VOICE] STT_FINAL transcript="${cleanChunk}"`);
+        console.log(`[VOICE] TURN_BUFFER="${turnFinalText}"`);
       }
 
       if (interim.trim()) {
@@ -2119,56 +2160,10 @@
       });
 
       if (turnFinalText.trim().length > 0) {
+        console.log(`[VOICE] TURN_END_TIMER_STARTED durationMs=${silenceTimeoutMs}`);
         silenceTimer = setTimeout(() => {
-          const finalTextToSubmit = turnFinalText.trim();
-          if (finalTextToSubmit) {
-            const currentlySpeaking = isSpeakingFn();
-            const curAssistantText = getAssistantTextFn ? getAssistantTextFn() : '';
-            if (currentlySpeaking && curAssistantText && isEchoText(finalTextToSubmit, curAssistantText)) {
-              console.log('[App] Filtered out acoustic speaker bleed:', finalTextToSubmit);
-              reset();
-              resolveSubmit(null);
-              return;
-            }
-
-            const normalizedFinal = normalizeConversationalControl(finalTextToSubmit, {
-              assistantSpeaking: currentlySpeaking || hasInterrupted,
-              pendingQuestion,
-              lastAssistantMsg: curAssistantText
-            });
-
-            // Check if user utterance is a pure conversational control / hesitation token:
-            const isPureControl = SHORT_CONVERSATIONAL_CONTROLS.has(normalizedFinal.toLowerCase()) ||
-              isWaitInterruptionApp(normalizedFinal);
-
-            // Valid answer check (e.g. answering fever inquiry with "ஆமா", or answering quantity question with "ஒரு")
-            const isValidAnswer = pendingQuestion && (
-              (pendingQuestion.symptom === 'fever' && (normalizedFinal === 'ஆமா' || normalizedFinal === 'ஆமாம்' || normalizedFinal === 'சரி' || normalizedFinal === 'yes')) ||
-              (/\b(how\s+many|எத்தனை|ஒன்றா)\b/i.test(pendingQuestion.questionText || '') && (normalizedFinal === 'ஒரு' || normalizedFinal === '1' || normalizedFinal === 'one'))
-            );
-
-            if (isPureControl && !isValidAnswer) {
-              console.log(`[VOICE] rawTranscript="${finalTextToSubmit}" normalizedTranscript="${normalizedFinal}" assistantSpeaking=${currentlySpeaking} interruptionDetected=${hasInterrupted} controlPhrase="${lastDetectedControlPhrase || normalizedFinal}" turnBuffer="${finalTextToSubmit}" turnEnd=false submittedToLLM=false`);
-              console.log('[TurnManager] Conversational hold/control phrase held in buffer ("' + normalizedFinal + '"), awaiting user continuation without LLM dispatch');
-              interruptionState = 'INTERRUPTED_WAITING_FOR_USER';
-              // Hold in buffer, DO NOT submit to LLM or trigger medical analysis!
-              resolveSubmit(null);
-              return;
-            }
-
-            // Substantive speech turn: strip leading control phrase if user spoke hold prefix before continuation
-            const cleanMedicalText = stripControlPrefix(normalizedFinal) || normalizedFinal;
-
-            console.log(`[VOICE] rawTranscript="${finalTextToSubmit}" normalizedTranscript="${cleanMedicalText}" assistantSpeaking=false interruptionDetected=false controlPhrase="${lastDetectedControlPhrase || ''}" turnBuffer="${finalTextToSubmit}" turnEnd=true submittedToLLM=true`);
-            console.log('[TurnManager] TURN_END:', cleanMedicalText);
-            console.log('[TurnManager] USER_TURN_SUBMITTED:', cleanMedicalText);
-
-            onSubmitSpeech(cleanMedicalText);
-            reset();
-            resolveSubmit(cleanMedicalText);
-          } else {
-            resolveSubmit(null);
-          }
+          silenceTimer = null;
+          finalizePendingTurn(resolveSubmit);
         }, silenceTimeoutMs);
       } else {
         resolveSubmit(null);
@@ -2187,6 +2182,7 @@
     return {
       processRecognitionEvent,
       reset,
+      flushPendingTurn,
       isInterrupted: () => hasInterrupted,
       getInterruptionState: () => interruptionState,
       getCurrentAccumulation: () => (turnFinalText + (interimText ? ' ' + interimText : '')).trim(),
@@ -2195,6 +2191,141 @@
   }
 
   let activeSpeechTurnController = null;
+
+  // ─── Decoupled UI Rendering & Backend Turn Submission ─────────
+
+  function renderUserMessage(displayText) {
+    if (!displayText) return;
+    addTranscriptMessage('user', displayText);
+  }
+
+  function submitUserTurn(finalTextToSubmit, meta = {}) {
+    const clean = (finalTextToSubmit || '').trim().toLowerCase();
+    if (!clean) return;
+
+    // Turn deduplication and single-flight enforcement
+    if (isSubmittingTurn) {
+      console.warn('[TurnManager] DUPLICATE_TURN_DROPPED: Turn submission already in-flight:', clean);
+      return;
+    }
+    if (clean === lastSubmittedTranscript && (Date.now() - lastSubmittedTime) < 2000) {
+      console.warn('[TurnManager] DUPLICATE_TURN_DROPPED: Dropping duplicate speech turn submission within debounce window:', clean);
+      return;
+    }
+
+    const turnId = meta.turnId || ('turn_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6));
+    isSubmittingTurn = true;
+    lastSubmittedTranscript = clean;
+    lastSubmittedTurnId = turnId;
+    lastSubmittedTime = Date.now();
+    lastUserTurnEndWallTime = performance.now();
+
+    // Auto-release lock after 8 seconds in case server never responds or network hangs
+    setTimeout(() => {
+      if (isSubmittingTurn && lastSubmittedTurnId === turnId) {
+        console.log('[TurnManager] Releasing isSubmittingTurn lock after timeout');
+        isSubmittingTurn = false;
+      }
+    }, 8000);
+
+    // Immediately halt any previous assistant speech before starting new consultation turn
+    if (audioPlayer) audioPlayer.stop();
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    if (currentGenerationId) {
+      invalidatedGenerations.add(currentGenerationId);
+    }
+    currentGenerationId = meta.generationId || ('gen_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7));
+    currentAssistantBubble = null;
+
+    console.log('[TurnManager] ANALYSIS_START (turnId: ' + turnId + ', genId: ' + currentGenerationId + '):', finalTextToSubmit);
+
+    // Normalize medical speech (Tamil, Hindi, English)
+    let normalized = meta.normalized;
+    if (!normalized) {
+      normalized = {
+        rawTranscript: finalTextToSubmit,
+        normalizedTranscript: finalTextToSubmit,
+        detectedMedicalTerms: [],
+        isAmbiguous: false,
+        clarificationPrompt: null,
+      };
+      if (typeof MedicalTranscriber !== 'undefined' && MedicalTranscriber.normalizeMedicalSpeech) {
+        normalized = MedicalTranscriber.normalizeMedicalSpeech(finalTextToSubmit, currentLanguage);
+      }
+    }
+
+    const displayText = meta.displayText || normalized.normalizedTranscript || finalTextToSubmit;
+
+    console.log('[TurnTelemetry]', {
+      turnId,
+      rawTranscript: finalTextToSubmit,
+      finalTranscript: displayText,
+      pendingActionBefore: pendingAction,
+      requestStartedAt: new Date().toISOString(),
+    });
+
+    if (isClientNegative(displayText)) {
+      if (pendingAction || nearbyCareStatus === 'pending' || displayText.toLowerCase().includes('clinic') || displayText.toLowerCase().includes('hospital') || displayText.includes('வேண்டாம்') || displayText.includes('இல்ல') || displayText.includes('नहीं')) {
+        nearbyCareStatus = 'declined';
+        pendingAction = null;
+        clearCareFacilities('declined');
+      }
+    } else if (isClientAffirmative(displayText)) {
+      if (pendingAction || nearbyCareStatus === 'pending') {
+        nearbyCareStatus = 'accepted';
+        pendingAction = null;
+      }
+    }
+
+    const lowerText = displayText.toLowerCase().trim();
+    if (/\b(?:share\s+(?:the\s+)?location\s+in\s+map|share\s+location|show\s+in\s+map|open\s+map|show\s+map)\b/i.test(lowerText)) {
+      if (latestCareFacilities.length > 0) {
+        selectFacilityByIndex(0, { zoom: 15 });
+      }
+    } else if (/\b(?:share|show|put|select|take\s+me\s+to|navigate\s+to|zoom\s+to|focus\s+on)?\s*(?:the\s+)?(?:facility\s+|hospital\s+|clinic\s+|option\s+)?(?:number|#|no\.?)?\s*(one|two|three|four|five|1|2|3|4|5|first|second|third|fourth|fifth)\b/i.test(lowerText)) {
+      const numMap = { 'one': 0, '1': 0, 'first': 0, 'two': 1, '2': 1, 'second': 1, 'three': 2, '3': 2, 'third': 2, 'four': 3, '4': 3, 'fourth': 3, 'five': 4, '5': 4, 'fifth': 4 };
+      const m = lowerText.match(/\b(?:number|#|no\.?)?\s*(one|two|three|four|five|1|2|3|4|5|first|second|third|fourth|fifth)\b/i);
+      if (m && numMap[m[1]] !== undefined) {
+        selectFacilityByIndex(numMap[m[1]], { zoom: 15 });
+      }
+    }
+
+    if (useHttpTransport) {
+      // HTTP/SSE mode: send via POST /api/chat with generationId
+      sendChatHTTP(displayText, { turnId, generationId: currentGenerationId });
+    } else {
+      // WebSocket mode: send via WS
+      sendMessage({
+        type: 'user_speech',
+        text: displayText,
+        rawTranscript: finalTextToSubmit,
+        normalizedTranscript: displayText,
+        medicalTerms: normalized.detectedMedicalTerms || [],
+        isAmbiguous: normalized.isAmbiguous,
+        location: currentLocation,
+        pendingAction,
+        nearbyCareStatus,
+        turnId,
+        generationId: currentGenerationId,
+      });
+    }
+
+    // Merge symptoms with previously reported symptoms
+    const localSymptoms = extractClientSymptoms(displayText);
+    if (localSymptoms.length > 0 && symptomTags) {
+      const existingTags = Array.from(symptomTags.querySelectorAll('.symptom-tag')).map(t => t.textContent.replace('• ', '').trim());
+      const mergedList = Array.from(new Set([...existingTags, ...localSymptoms]));
+      symptomTags.innerHTML = '';
+      mergedList.forEach(s => {
+        const tag = document.createElement('span');
+        tag.className = 'symptom-tag';
+        tag.textContent = '• ' + s;
+        symptomTags.appendChild(tag);
+      });
+    }
+  }
 
   function setupSpeechRecognition() {
     const SpeechRecognition = typeof window !== 'undefined' ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
@@ -2249,40 +2380,6 @@
         sendMessage(msg);
       },
       onSubmitSpeech: (finalTextToSubmit) => {
-        const clean = (finalTextToSubmit || '').trim().toLowerCase();
-        if (!clean) return;
-
-        // Turn deduplication and single-flight enforcement
-        if (isSubmittingTurn) {
-          console.warn('[TurnManager] DUPLICATE_TURN_DROPPED: Turn submission already in-flight:', clean);
-          return;
-        }
-        if (clean === lastSubmittedTranscript && (Date.now() - lastSubmittedTime) < 2000) {
-          console.warn('[TurnManager] DUPLICATE_TURN_DROPPED: Dropping duplicate speech turn submission within debounce window:', clean);
-          return;
-        }
-
-        const turnId = 'turn_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
-        isSubmittingTurn = true;
-        lastSubmittedTranscript = clean;
-        lastSubmittedTurnId = turnId;
-        lastSubmittedTime = Date.now();
-        lastUserTurnEndWallTime = performance.now();
-
-        // Immediately halt any previous assistant speech before starting new consultation turn
-        if (audioPlayer) audioPlayer.stop();
-        if (typeof window !== 'undefined' && window.speechSynthesis) {
-          window.speechSynthesis.cancel();
-        }
-        if (currentGenerationId) {
-          invalidatedGenerations.add(currentGenerationId);
-        }
-        currentGenerationId = 'gen_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7);
-        currentAssistantBubble = null;
-
-        console.log('[TurnManager] ANALYSIS_START (turnId: ' + turnId + ', genId: ' + currentGenerationId + '):', finalTextToSubmit);
-
-        // Normalize medical speech (Tamil, Hindi, English)
         let normalized = {
           rawTranscript: finalTextToSubmit,
           normalizedTranscript: finalTextToSubmit,
@@ -2290,81 +2387,16 @@
           isAmbiguous: false,
           clarificationPrompt: null,
         };
-
         if (typeof MedicalTranscriber !== 'undefined' && MedicalTranscriber.normalizeMedicalSpeech) {
           normalized = MedicalTranscriber.normalizeMedicalSpeech(finalTextToSubmit, currentLanguage);
         }
-
         const displayText = normalized.normalizedTranscript || finalTextToSubmit;
-        addTranscriptMessage('user', displayText);
 
-        console.log('[TurnTelemetry]', {
-          turnId,
-          rawTranscript: finalTextToSubmit,
-          finalTranscript: displayText,
-          pendingActionBefore: pendingAction,
-          requestStartedAt: new Date().toISOString(),
-        });
+        // 1. Separate UI message rendering
+        renderUserMessage(displayText);
 
-        if (isClientNegative(displayText)) {
-          if (pendingAction || nearbyCareStatus === 'pending' || displayText.toLowerCase().includes('clinic') || displayText.toLowerCase().includes('hospital') || displayText.includes('வேண்டாம்') || displayText.includes('இல்ல') || displayText.includes('नहीं')) {
-            nearbyCareStatus = 'declined';
-            pendingAction = null;
-            clearCareFacilities('declined');
-          }
-        } else if (isClientAffirmative(displayText)) {
-          if (pendingAction || nearbyCareStatus === 'pending') {
-            nearbyCareStatus = 'accepted';
-            pendingAction = null;
-          }
-        }
-
-        const lowerText = displayText.toLowerCase().trim();
-        if (/\b(?:share\s+(?:the\s+)?location\s+in\s+map|share\s+location|show\s+in\s+map|open\s+map|show\s+map)\b/i.test(lowerText)) {
-          if (latestCareFacilities.length > 0) {
-            selectFacilityByIndex(0, { zoom: 15 });
-          }
-        } else if (/\b(?:share|show|put|select|take\s+me\s+to|navigate\s+to|zoom\s+to|focus\s+on)?\s*(?:the\s+)?(?:facility\s+|hospital\s+|clinic\s+|option\s+)?(?:number|#|no\.?)?\s*(one|two|three|four|five|1|2|3|4|5|first|second|third|fourth|fifth)\b/i.test(lowerText)) {
-          const numMap = { 'one': 0, '1': 0, 'first': 0, 'two': 1, '2': 1, 'second': 1, 'three': 2, '3': 2, 'third': 2, 'four': 3, '4': 3, 'fourth': 3, 'five': 4, '5': 4, 'fifth': 4 };
-          const m = lowerText.match(/\b(?:number|#|no\.?)?\s*(one|two|three|four|five|1|2|3|4|5|first|second|third|fourth|fifth)\b/i);
-          if (m && numMap[m[1]] !== undefined) {
-            selectFacilityByIndex(numMap[m[1]], { zoom: 15 });
-          }
-        }
-
-        if (useHttpTransport) {
-          // HTTP/SSE mode: send via POST /api/chat with generationId
-          sendChatHTTP(displayText, { turnId, generationId: currentGenerationId });
-        } else {
-          // WebSocket mode: send via WS
-          sendMessage({
-            type: 'user_speech',
-            text: displayText,
-            rawTranscript: finalTextToSubmit,
-            normalizedTranscript: displayText,
-            medicalTerms: normalized.detectedMedicalTerms || [],
-            isAmbiguous: normalized.isAmbiguous,
-            location: currentLocation,
-            pendingAction,
-            nearbyCareStatus,
-            turnId,
-            generationId: currentGenerationId,
-          });
-        }
-
-        // Merge symptoms with previously reported symptoms
-        const localSymptoms = extractClientSymptoms(displayText);
-        if (localSymptoms.length > 0 && symptomTags) {
-          const existingTags = Array.from(symptomTags.querySelectorAll('.symptom-tag')).map(t => t.textContent.replace('• ', '').trim());
-          const mergedList = Array.from(new Set([...existingTags, ...localSymptoms]));
-          symptomTags.innerHTML = '';
-          mergedList.forEach(s => {
-            const tag = document.createElement('span');
-            tag.className = 'symptom-tag';
-            tag.textContent = '• ' + s;
-            symptomTags.appendChild(tag);
-          });
-        }
+        // 2. Separate backend turn submission
+        submitUserTurn(finalTextToSubmit, { displayText, normalized });
       },
       silenceTimeoutMs: 1200,
     });
@@ -2397,6 +2429,9 @@
     recognition.onend = () => {
       isRecognizing = false;
       console.log('[App] Speech recognition onend (isMicMuted:', isMicMuted, ')');
+      if (activeSpeechTurnController && activeSpeechTurnController.flushPendingTurn) {
+        activeSpeechTurnController.flushPendingTurn();
+      }
       // Auto-restart if mic is not muted
       if (!isMicMuted) {
         setTimeout(() => startRecognition(), 150);
@@ -2654,21 +2689,29 @@
 
   function sendMessage(message) {
     if (useHttpTransport) {
-      // In HTTP mode, most messages are handled differently:
-      // - user_speech → sendChatHTTP (handled at call site)
-      // - set_language, set_location → stored client-side
-      // - interrupt_start → abort SSE (handled at call site)
-      // - playback_start/complete, get_metrics → skip (no persistent server)
-      if (message.type === 'set_language' && message.language) {
-        // Language is already tracked in currentLanguage
-      } else if (message.type === 'set_location' && message.location) {
-        // Location is already tracked in currentLocation
+      // In HTTP mode, user_speech goes through sendChatHTTP
+      if (message.type === 'user_speech') {
+        sendChatHTTP(message.text, { turnId: message.turnId, generationId: message.generationId });
       }
       return;
     }
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(message));
+
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.warn(`[VOICE] WS_NOT_READY readyState=${ws ? ws.readyState : 'null'}`);
+      if (message.type === 'user_speech') {
+        console.log(`[VOICE] TURN_QUEUED turnId=${message.turnId || 'none'} text="${message.text || ''}"`);
+        pendingTurnQueue.push(message);
+      }
+      if (!ws || ws.readyState === WebSocket.CLOSED) {
+        connectWebSocket();
+      }
+      return;
     }
+
+    if (message.type === 'user_speech') {
+      console.log(`[VOICE] WS_SEND text="${message.text || ''}" turnId="${message.turnId || ''}"`);
+    }
+    ws.send(JSON.stringify(message));
   }
 
   // ─── Metrics ──────────────────────────────────────────────────
@@ -2748,6 +2791,8 @@
       CITY_COORDINATES,
       isIndiaLocation,
       renderCareFacilities,
+      renderUserMessage,
+      submitUserTurn,
     };
   }
 

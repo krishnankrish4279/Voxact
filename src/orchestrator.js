@@ -175,13 +175,13 @@ class Orchestrator extends EventEmitter {
    * Create a new generation ID and abort controller
    * Returns the generation ID
    */
-  _newGeneration() {
+  _newGeneration(customGenId = null) {
     // Abort any existing work
     if (this.activeAbortController) {
       this.activeAbortController.abort();
     }
 
-    const genId = uuidv4().slice(0, 8);
+    const genId = customGenId || uuidv4().slice(0, 8);
     this.currentGenerationId = genId;
     this.activeAbortController = new AbortController();
     this.spokenTextBuffer = '';
@@ -226,6 +226,8 @@ class Orchestrator extends EventEmitter {
     }
     this.seenSegments.add(segmentKey);
     this.seenSegments.add(normKey);
+
+    console.log(`[VOICE] RIME_START text="${cleanText}" (genId: ${genId})`);
 
     // Sentence-level pipelining: start background synthesis immediately without waiting for sentence 1 playback
     const audioPromise = this._synthesizeSegmentSafe(cleanText, genId, segmentId, responseId, signal);
@@ -288,6 +290,8 @@ class Orchestrator extends EventEmitter {
             isLast: true,
           });
 
+          console.log(`[VOICE] RIME_AUDIO_READY text="${item.text}" format="${this.rime.audioFormat || 'mp3'}" ttfbMs=${res.ttfbMs || 0}`);
+
           this.sendToClient({
             type: 'audio',
             data: res.audioBase64,
@@ -348,10 +352,13 @@ class Orchestrator extends EventEmitter {
     let clientNormalized = null;
     let clientTerms = null;
 
+    let clientGenId = null;
+
     if (typeof textOrPayload === 'object' && textOrPayload !== null) {
       rawText = (textOrPayload.rawTranscript || textOrPayload.text || '').trim();
       clientNormalized = textOrPayload.normalizedTranscript;
       clientTerms = textOrPayload.medicalTerms;
+      clientGenId = textOrPayload.generationId || null;
       if (textOrPayload.location) {
         this.setLocation(textOrPayload.location);
       }
@@ -399,7 +406,7 @@ class Orchestrator extends EventEmitter {
 
     // Safety guard: ambiguous utterances must prompt for clarification rather than assuming severe diagnoses
     if (isAmbiguous && clarificationPrompt && detectedMedicalTerms.length === 0) {
-      const clarifyGenId = this._newGeneration();
+      const clarifyGenId = this._newGeneration(clientGenId);
       this.llm.addUserMessage(rawTranscript);
       this.llm.addAssistantMessage(clarificationPrompt);
       this.sendToClient({
@@ -422,7 +429,7 @@ class Orchestrator extends EventEmitter {
     }
 
     // Normal flow: user finished speaking
-    await this._processUserInput(textToProcess, { rawTranscript, normalizedTranscript, detectedMedicalTerms });
+    await this._processUserInput(textToProcess, { rawTranscript, normalizedTranscript, detectedMedicalTerms }, clientGenId);
   }
 
   /**
@@ -498,9 +505,12 @@ class Orchestrator extends EventEmitter {
   /**
    * Process user input: send to LLM, handle response (text or tool calls)
    */
-  async _processUserInput(text, meta = {}) {
-    const genId = this._newGeneration();
+  async _processUserInput(text, meta = {}, clientGenId = null) {
+    const genId = this._newGeneration(clientGenId);
     const signal = this.activeAbortController.signal;
+
+    this.lastUserSpeech = text;
+    console.log(`[VOICE] ANALYSIS_START text="${text}"`);
 
     this._setState(STATE.PROCESSING);
     this.latency.startSession(this.sessionId, genId);
@@ -679,6 +689,11 @@ class Orchestrator extends EventEmitter {
       }
 
       this.latency.recordEvent(this.sessionId, genId, 'llm_complete');
+
+      if (textBuffer.trim().length > 0) {
+        console.log(`[VOICE] ASSISTANT_RESPONSE text="${textBuffer.trim()}"`);
+        console.log(`[VOICE] ANALYSIS_END text="${text}"`);
+      }
 
       // Synthesize any remaining text in the buffer
       if (sentenceBuffer.trim().length > 0) {
@@ -940,6 +955,17 @@ class Orchestrator extends EventEmitter {
         this._queueSynthesis(followUpSentenceBuffer.trim(), genId, signal, {
           responseId: followUpResponseId,
           segmentId: `seg_${++followUpSegIndex}`,
+        });
+      }
+
+      if (followUpBuffer.trim().length > 0) {
+        console.log(`[VOICE] ASSISTANT_RESPONSE text="${followUpBuffer.trim()}"`);
+        console.log(`[VOICE] ANALYSIS_END text="${this.lastUserSpeech || ''}"`);
+        this.sendToClient({
+          type: 'transcript',
+          role: 'assistant',
+          text: followUpBuffer.trim(),
+          generationId: genId,
         });
       }
 

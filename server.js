@@ -176,6 +176,14 @@ wss.on('connection', (ws) => {
           break;
 
         case 'user_speech':
+          const turnId = message.turnId || ('turn_' + Date.now().toString(36));
+          console.log(`[VOICE] BACKEND_RECEIVED turnId="${turnId}" text="${message.text || message.rawTranscript || ''}"`);
+          sendToClient({
+            type: 'user_turn_received',
+            turnId,
+            generationId: message.generationId,
+            timestamp: Date.now(),
+          });
           if (message.location) {
             orchestrator.setLocation(message.location);
           }
