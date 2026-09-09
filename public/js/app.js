@@ -69,6 +69,24 @@
   const fillerAlert = doc.getElementById('fillerAlert');
   const fillerAlertText = doc.getElementById('fillerAlertText');
 
+  // STT Isolated Debug Monitor Elements
+  const sttDebugMonitor = doc.getElementById('sttDebugMonitor');
+  const sttLiveInterim = doc.getElementById('sttLiveInterim');
+  const sttLiveFinal = doc.getElementById('sttLiveFinal');
+  const sttDebugStatus = doc.getElementById('sttDebugStatus');
+
+  function updateSTTDebugUI({ interim, final, status } = {}) {
+    if (sttLiveInterim && interim !== undefined) {
+      sttLiveInterim.textContent = interim ? `"${interim}"` : '"..."';
+    }
+    if (sttLiveFinal && final !== undefined) {
+      sttLiveFinal.textContent = final ? `"${final}"` : '"..."';
+    }
+    if (sttDebugStatus && status !== undefined) {
+      sttDebugStatus.textContent = status;
+    }
+  }
+
   // ─── State ─────────────────────────────────────────────────────
   let ws = null;
   let recognition = null;
@@ -79,6 +97,9 @@
   let isMicMuted = false;
   let currentState = 'idle';
   let isRecognizing = false;
+  let isStartingRecognition = false;
+  let recognitionRestartTimer = null;
+  const DEBUG_STT_ONLY = true; // STT Isolated Debug Phase: Hold submissions from LLM
   let currentAssistantBubble = null;
   let interruptionDetected = false;
   let currentGenerationId = null;
@@ -342,6 +363,9 @@
     updateRegionalEmergencyGuidance();
     if (recognition) {
       recognition.lang = config.recognitionLang;
+      console.log(`[VOICE] RECOGNITION_LANG_UPDATED lang="${config.recognitionLang}" timestamp=${Date.now()}`);
+      console.log(`[VOICE] VERIFY continuous=${recognition.continuous} interimResults=${recognition.interimResults} langMatch=${recognition.lang === config.recognitionLang} currentLang="${currentLanguage}" recognitionLang="${recognition.lang}" timestamp=${Date.now()}`);
+      updateSTTDebugUI({ status: `LANG: ${config.recognitionLang}` });
       if (isRecognizing && !isMicMuted) {
         try { recognition.stop(); } catch (e) {}
       }
@@ -1436,6 +1460,14 @@
       // 3. Request microphone access with echo cancellation
       let stream = null;
       try {
+        if (navigator.permissions && navigator.permissions.query) {
+          try {
+            const p = await navigator.permissions.query({ name: 'microphone' });
+            console.log(`[VOICE] MIC_PERMISSION status="${p.state}" timestamp=${Date.now()}`);
+          } catch (e) {
+            console.log(`[VOICE] MIC_PERMISSION status="query_unsupported" timestamp=${Date.now()}`);
+          }
+        }
         if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
           stream = await navigator.mediaDevices.getUserMedia({
             audio: {
@@ -1445,9 +1477,13 @@
             }
           });
           mediaStream = stream;
+          console.log(`[VOICE] MIC_START streamId="${stream.id}" tracks=${stream.getAudioTracks().length} active=${stream.active} timestamp=${Date.now()}`);
+          updateSTTDebugUI({ status: 'MIC ACTIVE' });
           if (visualizer) visualizer.connectStream(stream);
         }
       } catch (micErr) {
+        console.error(`[VOICE] MIC_PERMISSION status="denied" error="${micErr.message}" timestamp=${Date.now()}`);
+        updateSTTDebugUI({ status: 'MIC PERMISSION DENIED' });
         console.warn('[App] Microphone access denied or not available:', micErr.message);
         addTranscriptMessage('system', 'Microphone not detected or permission denied. Voice assistant audio is active. You can speak with a headset or type symptoms below.');
       }
@@ -1935,6 +1971,8 @@
     let currentTurnBuffer = '';
     let turnFinalText = '';
     let interimText = '';
+    let sessionFinalText = '';
+    let accumulatedSessionPrefix = '';
     let silenceTimer = null;
     let hasInterrupted = false;
     let turnStarted = false;
@@ -1951,12 +1989,26 @@
       turnFinalText = '';
       currentTurnBuffer = '';
       interimText = '';
+      sessionFinalText = '';
+      accumulatedSessionPrefix = '';
       hasInterrupted = false;
       turnStarted = false;
       interruptionState = 'IDLE';
       lastDetectedControlPhrase = null;
       lastFinalProcessedIndex = -1;
       onInterimUpdate('', false);
+    }
+
+    function onSessionEnd() {
+      // Retain speech across browser SpeechRecognition session restarts
+      if (sessionFinalText) {
+        if (!accumulatedSessionPrefix) {
+          accumulatedSessionPrefix = sessionFinalText;
+        } else if (!accumulatedSessionPrefix.includes(sessionFinalText)) {
+          accumulatedSessionPrefix += ' ' + sessionFinalText;
+        }
+        sessionFinalText = '';
+      }
     }
 
     function finalizePendingTurn(resolveSubmit = null) {
@@ -2019,7 +2071,7 @@
     function flushPendingTurn() {
       if (silenceTimer && turnFinalText.trim().length > 0) {
         const elapsed = lastSpeechTimestamp ? (Date.now() - lastSpeechTimestamp) : 0;
-        if (elapsed >= 300) {
+        if (elapsed >= silenceTimeoutMs) {
           clearTimeout(silenceTimer);
           silenceTimer = null;
           finalizePendingTurn();
@@ -2027,7 +2079,7 @@
       }
     }
 
-    function processRecognitionEvent(results, resultIndex = 0) {
+    function processRecognitionEvent(results, resultIndex = 0, lang = '') {
       lastSpeechTimestamp = Date.now();
       let interim = '';
       let newFinal = '';
@@ -2039,18 +2091,47 @@
         startIndex = 0;
       }
 
-      console.log('[VOICE] STT_RESULT', { count: items ? items.length : 0, resultIndex: startIndex });
+      const len = items ? items.length : 0;
+      let sessionFinal = '';
+      let sessionInterim = '';
 
-      for (let i = startIndex; i < (items ? items.length : 0); i++) {
+      for (let i = 0; i < len; i++) {
         const item = items[i];
         const text = (item && item[0] ? item[0].transcript : (item?.transcript || item?.finalChunk || item?.interim || '')) || '';
         const isFinal = item && (item.isFinal !== undefined ? item.isFinal : Boolean(item?.finalChunk));
+        const clean = text.trim();
+        if (!clean) continue;
         if (isFinal) {
-          newFinal += text + ' ';
+          sessionFinal += (sessionFinal ? ' ' : '') + clean;
         } else {
-          interim += text;
+          sessionInterim += (sessionInterim ? ' ' : '') + clean;
         }
       }
+
+      // Handle single-chunk delta (e.g. mock test passing { finalChunk: '...' }) vs full session results
+      if (len === 1 && items[0] && (items[0].isFinal || items[0].finalChunk)) {
+        const singleChunk = (items[0][0] ? items[0][0].transcript : (items[0].transcript || items[0].finalChunk || '')).trim();
+        if (singleChunk) {
+          if (!turnFinalText.trim()) {
+            turnFinalText = singleChunk;
+          } else if (!turnFinalText.endsWith(singleChunk) && !turnFinalText.includes(singleChunk)) {
+            turnFinalText += ' ' + singleChunk;
+          }
+          newFinal = singleChunk;
+        }
+      } else if (sessionFinal) {
+        sessionFinalText = sessionFinal;
+        if (accumulatedSessionPrefix) {
+          turnFinalText = (accumulatedSessionPrefix + ' ' + sessionFinal).trim();
+        } else {
+          turnFinalText = sessionFinal;
+        }
+        newFinal = sessionFinal;
+      }
+
+      interim = sessionInterim;
+      interimText = interim;
+      currentTurnBuffer = turnFinalText;
 
       const isSpeaking = isSpeakingFn();
       const assistantText = getAssistantTextFn ? getAssistantTextFn() : '';
@@ -2075,11 +2156,6 @@
           console.log('[TurnManager] TURN_START');
           turnStarted = true;
         }
-        if (!turnFinalText.trim()) {
-          turnFinalText = cleanChunk;
-        } else if (!turnFinalText.endsWith(cleanChunk)) {
-          turnFinalText += ' ' + cleanChunk;
-        }
         currentTurnBuffer = turnFinalText;
         console.log('[TurnManager] STT_FINAL:', cleanChunk);
         console.log('[TurnManager] TURN_BUFFER_APPEND:', cleanChunk, '| Accumulated Buffer:', turnFinalText);
@@ -2094,7 +2170,6 @@
         }
         console.log('[TurnManager] STT_INTERIM:', interim.trim());
       }
-      interimText = interim;
 
       const currentSpeech = (turnFinalText + (interim ? ' ' + interim : '')).trim();
       if (!currentSpeech) return null;
@@ -2183,6 +2258,7 @@
       processRecognitionEvent,
       reset,
       flushPendingTurn,
+      onSessionEnd,
       isInterrupted: () => hasInterrupted,
       getInterruptionState: () => interruptionState,
       getCurrentAccumulation: () => (turnFinalText + (interimText ? ' ' + interimText : '')).trim(),
@@ -2331,16 +2407,42 @@
     const SpeechRecognition = typeof window !== 'undefined' ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
 
     if (!SpeechRecognition) {
-      console.error('[App] Speech Recognition not supported');
+      console.error('[VOICE] Speech Recognition not supported in this browser');
       addTranscriptMessage('system', 'Speech recognition is not supported in this browser. Please use Chrome or Edge.');
+      updateSTTDebugUI({ status: 'NOT SUPPORTED' });
       return;
     }
+
+    // STRICT SINGLETON: safely clean up existing instance before recreating
+    if (recognition) {
+      console.log('[VOICE] Cleaning up existing SpeechRecognition instance to guarantee single-instance lifecycle');
+      try {
+        recognition.onresult = null;
+        recognition.onerror = null;
+        recognition.onend = null;
+        recognition.onstart = null;
+        recognition.onaudiostart = null;
+        recognition.onsoundstart = null;
+        recognition.onspeechstart = null;
+        recognition.abort();
+      } catch (e) {}
+      recognition = null;
+    }
+    if (recognitionRestartTimer) {
+      clearTimeout(recognitionRestartTimer);
+      recognitionRestartTimer = null;
+    }
+    isRecognizing = false;
+    isStartingRecognition = false;
 
     recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = (LANGUAGE_CONFIGS[currentLanguage] && LANGUAGE_CONFIGS[currentLanguage].recognitionLang) || 'en-IN';
+    const targetLang = (LANGUAGE_CONFIGS[currentLanguage] && LANGUAGE_CONFIGS[currentLanguage].recognitionLang) || 'en-IN';
+    recognition.lang = targetLang;
     recognition.maxAlternatives = 1;
+
+    console.log(`[VOICE] VERIFY continuous=${recognition.continuous} interimResults=${recognition.interimResults} langMatch=${recognition.lang === targetLang} currentLang="${currentLanguage}" recognitionLang="${recognition.lang}" timestamp=${Date.now()}`);
 
     activeSpeechTurnController = createSpeechTurnController({
       isSpeakingFn: isAssistantSpeaking,
@@ -2353,6 +2455,10 @@
             stateText.textContent = STATE_DISPLAY['listening'];
           }
         }
+        updateSTTDebugUI({
+          interim: speech,
+          status: isInterim ? 'AUDIO DETECTED / LISTENING (INTERIM)' : 'LISTENING'
+        });
       },
       onAudioHalt: (phrase) => {
         audioPlayer.stop();
@@ -2392,8 +2498,21 @@
         }
         const displayText = normalized.normalizedTranscript || finalTextToSubmit;
 
+        // Update visible debug transcript showing completed final sentence
+        updateSTTDebugUI({
+          interim: '',
+          final: displayText,
+          status: 'COMPLETED FINAL (LLM SUBMISSION HELD)'
+        });
+
         // 1. Separate UI message rendering
         renderUserMessage(displayText);
+
+        // 2. STT Debug Phase: Do NOT submit anything to LLM
+        if (DEBUG_STT_ONLY) {
+          console.log(`[VOICE] USER_TURN_SUBMITTED [DEBUG PHASE: LLM SUBMISSION HELD] transcript="${displayText}"`);
+          return;
+        }
 
         // 2. Separate backend turn submission
         submitUserTurn(finalTextToSubmit, { displayText, normalized });
@@ -2402,39 +2521,84 @@
     });
 
     recognition.onresult = (event) => {
-      activeSpeechTurnController.processRecognitionEvent(event.results, event.resultIndex);
+      const results = event.results;
+      const resultIndex = event.resultIndex !== undefined ? event.resultIndex : 0;
+      const resultsLength = results ? results.length : 0;
+      const lang = recognition ? recognition.lang : ((LANGUAGE_CONFIGS[currentLanguage] && LANGUAGE_CONFIGS[currentLanguage].recognitionLang) || 'en-IN');
+      const now = Date.now();
+
+      for (let i = resultIndex; i < resultsLength; i++) {
+        const item = results[i];
+        const rawText = (item && item[0] ? item[0].transcript : '') || '';
+        const isFinal = item ? Boolean(item.isFinal) : false;
+        console.log(`[VOICE] STT_RESULT rawText="${rawText}" isFinal=${isFinal} resultIndex=${i} resultsLength=${resultsLength} lang="${lang}" timestamp=${now}`);
+        if (isFinal) {
+          console.log(`[VOICE] STT_FINAL rawText="${rawText}" isFinal=true resultIndex=${i} resultsLength=${resultsLength} lang="${lang}" timestamp=${now}`);
+        } else {
+          console.log(`[VOICE] STT_INTERIM rawText="${rawText}" isFinal=false resultIndex=${i} resultsLength=${resultsLength} lang="${lang}" timestamp=${now}`);
+        }
+      }
+
+      activeSpeechTurnController.processRecognitionEvent(results, resultIndex, lang);
     };
 
     recognition.onstart = () => {
+      isStartingRecognition = false;
       isRecognizing = true;
-      console.log('[App] Speech recognition onstart: actively listening');
+      const now = Date.now();
+      console.log(`[VOICE] RECOGNITION_START continuous=${recognition.continuous} interimResults=${recognition.interimResults} lang="${recognition.lang}" timestamp=${now}`);
+      updateSTTDebugUI({ status: `LISTENING (${recognition.lang})` });
+    };
+
+    recognition.onaudiostart = () => {
+      console.log(`[VOICE] AUDIO_DETECTED type="audiostart" timestamp=${Date.now()}`);
+      updateSTTDebugUI({ status: 'AUDIO DETECTED' });
+    };
+
+    recognition.onsoundstart = () => {
+      console.log(`[VOICE] AUDIO_DETECTED type="soundstart" timestamp=${Date.now()}`);
+    };
+
+    recognition.onspeechstart = () => {
+      console.log(`[VOICE] AUDIO_DETECTED type="speechstart" timestamp=${Date.now()}`);
     };
 
     recognition.onerror = (event) => {
-      console.error('[App] Speech recognition error:', event.error);
+      isStartingRecognition = false;
+      isRecognizing = false;
+      const now = Date.now();
+      console.error(`[VOICE] RECOGNITION_ERROR error="${event.error}" message="${event.message || ''}" timestamp=${now}`);
+      updateSTTDebugUI({ status: `ERROR: ${event.error}` });
       if (event.error === 'not-allowed') {
         addTranscriptMessage('system', 'Microphone access was denied. Please allow microphone permissions.');
+        return;
       }
-      isRecognizing = false;
       // Restart on recoverable errors ONLY if mic is not muted
       if (['network', 'aborted', 'no-speech'].includes(event.error)) {
-        setTimeout(() => {
-          if (!isMicMuted) {
+        if (!isMicMuted) {
+          if (recognitionRestartTimer) clearTimeout(recognitionRestartTimer);
+          recognitionRestartTimer = setTimeout(() => {
             startRecognition();
-          }
-        }, 800);
+          }, 600);
+        }
       }
     };
 
     recognition.onend = () => {
+      isStartingRecognition = false;
       isRecognizing = false;
-      console.log('[App] Speech recognition onend (isMicMuted:', isMicMuted, ')');
-      if (activeSpeechTurnController && activeSpeechTurnController.flushPendingTurn) {
-        activeSpeechTurnController.flushPendingTurn();
+      const now = Date.now();
+      console.log(`[VOICE] RECOGNITION_END isMicMuted=${isMicMuted} timestamp=${now}`);
+      updateSTTDebugUI({ status: 'RECOGNITION_END' });
+      if (activeSpeechTurnController && activeSpeechTurnController.onSessionEnd) {
+        activeSpeechTurnController.onSessionEnd();
       }
-      // Auto-restart if mic is not muted
+      // Auto-restart safely with debounce if mic is not muted
       if (!isMicMuted) {
-        setTimeout(() => startRecognition(), 150);
+        if (recognitionRestartTimer) clearTimeout(recognitionRestartTimer);
+        recognitionRestartTimer = setTimeout(() => {
+          startRecognition();
+        }, 150);
       }
     };
 
@@ -2467,13 +2631,22 @@
   }
 
   function startRecognition() {
-    if (isRecognizing || !recognition || isMicMuted) return;
+    if (isMicMuted || !recognition) return;
+    if (isRecognizing || isStartingRecognition) {
+      console.log('[VOICE] startRecognition ignored: already recognizing or starting');
+      return;
+    }
     try {
+      isStartingRecognition = true;
       recognition.start();
-      isRecognizing = true;
-      console.log('[App] Speech recognition start() called successfully');
+      console.log('[VOICE] recognition.start() called');
     } catch (err) {
-      console.log('[App] Speech recognition already running or starting');
+      isStartingRecognition = false;
+      if (err.name === 'InvalidStateError') {
+        console.warn('[VOICE] recognition.start() called while already starting or running');
+      } else {
+        console.error('[VOICE] recognition.start() error:', err);
+      }
     }
   }
 
@@ -2793,6 +2966,8 @@
       renderCareFacilities,
       renderUserMessage,
       submitUserTurn,
+      updateSTTDebugUI,
+      DEBUG_STT_ONLY,
     };
   }
 
