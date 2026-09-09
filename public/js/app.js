@@ -155,8 +155,22 @@
 
   function stripControlPrefix(text) {
     if (!text || typeof text !== 'string') return '';
+    const hasTamil = /[\u0B80-\u0BFF]/.test(text);
+    const hasHindi = /[\u0900-\u097F]/.test(text);
+
+    if (hasTamil) {
+      return text
+        .replace(/^(?:(?:கொஞ்சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|ஒரு\s*நிமிஷம்|ஒரு\s*நிமிடம்|இரு(?:ங்கள்)?|நில்லு?(?:ங்கள்)?)|(?:wait(?:\s+wait)?|hold\s+on|one\s+second|one\s+minute|just\s+a\s+sec(?:ond)?|just\s+a\s+minute))\s*[,.\-—:]*\s*/i, '')
+        .trim();
+    }
+    if (hasHindi) {
+      return text
+        .replace(/^(?:(?:जरा\s+)?(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*сеकंड)|(?:wait(?:\s+wait)?|hold\s+on|one\s+second|one\s+minute|just\s+a\s+sec(?:ond)?|just\s+a\s+minute))\s*[,.\-—:]*\s*/i, '')
+        .trim();
+    }
+
     return text
-      .replace(/^(?:(?:கொஞ்சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|ஒரு\s*நிமிஷம்|ஒரு\s*நிமிடம்|இரு(?:ங்கள்)?|நில்லு?(?:ங்கள்)?)|(?:wait(?:\s+wait)?|hold\s+on|one\s+second|one\s+minute|just\s+a\s+sec(?:ond)?|just\s+a\s+minute)|(?:जरा\s+)?(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड))\s*[,.\-—:]*\s*/i, '')
+      .replace(/^(?:(?:கொஞ்சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|ஒரு\s*நிமிஷம்|ஒரு\s*நிமிடம்|இரு(?:ங்கள்)?|நில்லு?(?:ங்கள்)?))\s*[,.\-—:]*\s*/i, '')
       .trim();
   }
 

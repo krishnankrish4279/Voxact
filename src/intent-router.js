@@ -75,21 +75,35 @@ function normalizeConversationalControl(rawText, context = {}) {
  */
 function stripControlPrefix(text) {
   if (!text || typeof text !== 'string') return '';
+  const hasTamil = /[\u0B80-\u0BFF]/.test(text);
+  const hasHindi = /[\u0900-\u097F]/.test(text);
+
+  if (hasTamil) {
+    return text
+      .replace(/^(?:(?:கொஞ்சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|ஒரு\s*நிமிஷம்|ஒரு\s*நிமிடம்|இரு(?:ங்கள்)?|நில்லு?(?:ங்கள்)?)|(?:wait(?:\s+wait)?|hold\s+on|one\s+second|one\s+minute|just\s+a\s+sec(?:ond)?|just\s+a\s+minute))\s*[,.\-—:]*\s*/i, '')
+      .trim();
+  }
+  if (hasHindi) {
+    return text
+      .replace(/^(?:(?:जरा\s+)?(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड)|(?:wait(?:\s+wait)?|hold\s+on|one\s+second|one\s+minute|just\s+a\s+sec(?:ond)?|just\s+a\s+minute))\s*[,.\-—:]*\s*/i, '')
+      .trim();
+  }
+
   return text
-    .refunction isWaitInterruption(text) {
+    .replace(/^(?:(?:கொஞ்சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|ஒரு\s*நிமிஷம்|ஒரு\s*நிமிடம்|இரு(?:ங்கள்)?|நில்லு?(?:ங்கள்)?))\s*[,.\-—:]*\s*/i, '')
+    .trim();
+}
+
+/**
+ * Check if the text is a pure wait / interruption command
+ */
+function isWaitInterruption(text) {
   if (!text) return false;
   const lower = text.toLowerCase().trim();
   const raw = text.trim();
 
-  // If there is substantive speech remaining after stripping conversational control prefixes,
-  // this is a full utterance with a control prefix (e.g. "Wait, I want a hospital instead", "பொரு, எனக்கு ஒரு வேற symptom இருக்கு"), NOT a pure hold command.
-  const stripped = stripControlPrefix(text);
-  if (stripped && stripped.length > 0) {
-    return false;
-  }
-
   // Pure English wait phrases
-  if (/^(?:wait|wait\s+wait|wait\s+wait\s+wait|please\s+wait|hold\s+on|just\s+hold\s+on|hang\s+on|hold\s+up|one\s+second|just\s+a\s+second|just\s+a\s+minute|one\s+minute|stop|i'm\s+still\s+talking|im\s+still\s+talking|give\s+me\s+a\s+sec(?:ond)?)$/i.test(lower)) {
+  if (/^(?:wait|wait\s+wait|wait\s+wait\s+wait|please\s+wait|hold\s+on|hold\s+on\s+a\s+second|just\s+hold\s+on|hang\s+on|hold\s+up|one\s+second|just\s+a\s+second|just\s+a\s+minute|one\s+minute|stop|i'm\s+still\s+talking|im\s+still\s+talking|give\s+me\s+a\s+sec(?:ond)?)$/i.test(lower)) {
     return true;
   }
 
@@ -97,7 +111,7 @@ function stripControlPrefix(text) {
   if (/^(?:poru|porru|pohru|konjam\s+poru|nillu|niruthu|oru\s+nimisham|irunga|kaathiru)$/i.test(lower)) {
     return true;
   }
-  if (/^(?:கொஞ்சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|பொறுமை|நில்|நில்லு|நில்லுங்க|நிறுத்து|காத்திரு|ஒரு\s*நிமிடம்|ஒரு\s*நிமிஷம்|இரு|இருங்க)$/i.test(raw)) {
+  if (/^(?:கொஞ்சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|பொறுமை|நில்|நில்லு|நில்லுங்க|நிறுத்து|காத்திரு|ஒரு\s*நிமிடம்|ஒரு\s*நிமிஷம்|இரு|இருங்க)(?:\s+(?:இருங்க|இரு))?$/i.test(raw)) {
     return true;
   }
 
@@ -105,32 +119,13 @@ function stripControlPrefix(text) {
   if (/^(?:ruko|rukiye|thahro|thahariye|ek\s+minute|ek\s+second|zara\s+ruko)$/i.test(lower)) {
     return true;
   }
-  if (/^(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड|जरा\s*रुको)$/i.test(raw)) {
-    return true;
-  }
-
-  return false;
-}�சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|பொறுமை|நில்|நில்லு|நிறுத்து|காத்திரு|ஒரு\s*நிமிடம்|ஒரு\s*நிமிஷம்|இருங்க)$/i.test(raw) ||
-      (/^(?:கொஞ்சம்\s+)?(?:பொரு|பொறு|போறு|பொற|போரு|பொறுமை|நில்|நில்லு|நிறுத்து|காத்திரு|ஒரு\s*நிமிடம்|ஒரு\s*நிமிஷம்|இருங்க)(?:\s|$|[.,!?])/i.test(raw) && !hasSymptom)) {
-    return true;
-  }
-
-  // Hindi wait phrases
-  if (/^(?:ruko|rukiye|thahro|thahariye|ek\s+minute|ek\s+second|zara\s+ruko)$/i.test(lower) ||
-      (/^(?:ruko|rukiye|thahro|thahariye|ek\s+minute|ek\s+second|zara\s+ruko)\b/i.test(lower) && !hasSymptom)) {
-    return true;
-  }
-  if (/^(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड|जरा\s*रुको)$/i.test(raw) ||
-      (/^(?:रुको|रुकिए|ठहरो|ठहरिए|एक\s*मिनट|एक\s*सेकंड|जरा\s*रुको)(?:\s|$|[.,!?])/i.test(raw) && !hasSymptom)) {
+  if (/^(?:(?:जरा\s+)?(?:रुको|रुकिए|ठहरो|ठहरिए)|एक\s*मिनट|एक\s*सेकंड)$/i.test(raw)) {
     return true;
   }
 
   return false;
 }
 
-/**
- * Extract facility selection index if present (e.g. "show number one", "share number one", "put number one on map", "select option three")
- */
 function extractFacilitySelection(text) {
   if (!text) return null;
   const lower = text.toLowerCase().trim();
