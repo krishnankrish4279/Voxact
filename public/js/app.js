@@ -99,7 +99,7 @@
   let isRecognizing = false;
   let isStartingRecognition = false;
   let recognitionRestartTimer = null;
-  const DEBUG_STT_ONLY = true; // STT Isolated Debug Phase: Hold submissions from LLM
+  const DEBUG_STT_ONLY = false; // STT submissions enabled to canonical submitUserTurn
   let currentAssistantBubble = null;
   let interruptionDetected = false;
   let currentGenerationId = null;
@@ -1208,45 +1208,6 @@
       });
     }
 
-    function submitTextMessage() {
-      if (!userTextInput) return;
-      const text = userTextInput.value.trim();
-      if (!text) return;
-      userTextInput.value = '';
-
-      if (!isSessionStarted) {
-        handleStart();
-      }
-
-      if (activeSpeechTurnController) {
-        activeSpeechTurnController.reset();
-      }
-
-      // Immediately halt any previous assistant speech before starting new consultation turn
-      if (audioPlayer) audioPlayer.stop();
-      if (typeof window !== 'undefined' && window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-      }
-
-      console.log('[App] Submitting typed text consultation:', text);
-      let normalized = {
-        rawTranscript: text,
-        normalizedTranscript: text,
-        detectedMedicalTerms: [],
-        isAmbiguous: false,
-        clarificationPrompt: null,
-      };
-      if (typeof MedicalTranscriber !== 'undefined' && MedicalTranscriber.normalizeMedicalSpeech) {
-        normalized = MedicalTranscriber.normalizeMedicalSpeech(text, currentLanguage);
-      }
-      const displayText = normalized.normalizedTranscript || text;
-      // 1. Explicit UI message rendering
-      renderUserMessage(displayText);
-
-      // 2. Explicit backend turn submission
-      submitUserTurn(text, { displayText, normalized });
-    }
-
     if (textInputForm) {
       textInputForm.addEventListener('submit', (e) => {
         e.preventDefault();
@@ -1653,6 +1614,7 @@
       useHttpTransport = false;
       setConnectionStatus('connected', 'Connected');
       console.log('[App] WebSocket connected');
+      console.log('[WS] OPEN=true');
 
       // Flush any queued turns upon connection
       while (pendingTurnQueue.length > 0) {
@@ -1716,13 +1678,14 @@
     while (pendingTurnQueue.length > 0) {
       const queuedMsg = pendingTurnQueue.shift();
       console.log(`[VOICE] TURN_FLUSHED turnId=${queuedMsg.turnId || 'none'} text="${queuedMsg.text || ''}"`);
-      if (queuedMsg.type === 'user_speech') {
+      if (queuedMsg.type === 'user_speech' || queuedMsg.type === 'user_message') {
+        hasStartedInitialSession = true;
         sendChatHTTP(queuedMsg.text, { turnId: queuedMsg.turnId, generationId: queuedMsg.generationId });
       }
     }
 
-    // If session was being started, continue via HTTP
-    if (isSessionStarted) {
+    // If session was being started, continue via HTTP only if no user turn has been queued
+    if (isSessionStarted && !hasStartedInitialSession) {
       startSessionHTTP();
     }
   }
@@ -1739,8 +1702,8 @@
         if (message.language && message.language !== currentLanguage) {
           setAppLanguage(message.language, false);
         }
-        // In WebSocket mode, send start_session exactly once; in HTTP mode, session is already started
-        if (!useHttpTransport && !hasStartedInitialSession) {
+        // In WebSocket mode, send start_session only if no user turn has been initiated or queued!
+        if (!useHttpTransport && !hasStartedInitialSession && pendingTurnQueue.length === 0) {
           hasStartedInitialSession = true;
           sendMessage({ type: 'start_session' });
         }
@@ -1801,19 +1764,24 @@
         handleAudioChunk(message);
         break;
 
+      case 'assistant_response':
       case 'transcript':
         if (message.generationId && invalidatedGenerations.has(message.generationId)) {
           console.log('[TurnManager] STALE_RESPONSE_DROPPED: Transcript dropped for invalidated generation:', message.generationId);
           return;
         }
         currentGenerationId = message.generationId || currentGenerationId;
-        if (message.role === 'assistant') {
+        if (message.role === 'assistant' || message.type === 'assistant_response') {
+          console.log(`[CLIENT] ASSISTANT_RESPONSE_RECEIVED text="${message.text || ''}"`);
           console.log(`[VOICE] ASSISTANT_RESPONSE text="${message.text || ''}"`);
           console.log('[TurnManager] ASSISTANT_RESPONSE:', message.text);
           console.log('[TurnManager] ANALYSIS_END (genId: ' + (message.generationId || currentGenerationId) + ')');
           isSubmittingTurn = false;
         }
-        addTranscriptMessage(message.role, message.text);
+        addTranscriptMessage(message.role || 'assistant', message.text);
+        if (message.role === 'assistant' || message.type === 'assistant_response') {
+          console.log(`[UI] ASSISTANT_MESSAGE_RENDERED text="${message.text || ''}"`);
+        }
         break;
 
       case 'transcript_chunk':
@@ -2374,7 +2342,7 @@
     } else {
       // WebSocket mode: send via WS
       sendMessage({
-        type: 'user_speech',
+        type: 'user_message',
         text: displayText,
         rawTranscript: finalTextToSubmit,
         normalizedTranscript: displayText,
@@ -2401,6 +2369,79 @@
         symptomTags.appendChild(tag);
       });
     }
+  }
+
+  // ─── Decoupled Typed Message Submission ───────────────────────
+
+  function submitTypedMessage(text) {
+    const cleanText = (text || '').trim();
+    if (!cleanText) return;
+
+    console.log(`[TEXT] INPUT="${cleanText}"`);
+    console.log('[TEXT] SUBMIT');
+
+    // 1. Non-blockingly initialize audio player on user gesture for audio responses (bypasses mic)
+    if (audioPlayer && !audioPlayer.isInitialized) {
+      audioPlayer.init().catch(() => {});
+    }
+    if (audioPlayer && audioPlayer.audioContext && audioPlayer.audioContext.state === 'suspended') {
+      audioPlayer.audioContext.resume().catch(() => {});
+    }
+
+    // 2. Halt any previous assistant speech before starting new consultation turn
+    if (audioPlayer) audioPlayer.stop();
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+
+    // 3. Mark session as active and mark initial session started so start_session greeting doesn't abort this turn
+    isSessionStarted = true;
+    hasStartedInitialSession = true;
+
+    // 4. Ensure transport is connected if WebSocket
+    if (!useHttpTransport && (!ws || ws.readyState !== (typeof WebSocket !== 'undefined' ? WebSocket.OPEN : 1))) {
+      connectWebSocket();
+    }
+
+    // 5. Reset controller and locks to ensure this typed turn is never blocked
+    if (activeSpeechTurnController) {
+      activeSpeechTurnController.reset();
+    }
+    isSubmittingTurn = false;
+    lastSubmittedTranscript = '';
+    lastSubmittedTime = 0;
+
+    let normalized = {
+      rawTranscript: cleanText,
+      normalizedTranscript: cleanText,
+      detectedMedicalTerms: [],
+      isAmbiguous: false,
+      clarificationPrompt: null,
+    };
+    if (typeof MedicalTranscriber !== 'undefined' && MedicalTranscriber.normalizeMedicalSpeech) {
+      normalized = MedicalTranscriber.normalizeMedicalSpeech(cleanText, currentLanguage);
+    }
+    const displayText = normalized.normalizedTranscript || cleanText;
+
+    console.log(`[TEXT] USER_MESSAGE_CREATED text="${cleanText}" displayText="${displayText}"`);
+
+    // 6. Explicit UI message rendering
+    renderUserMessage(displayText);
+
+    // 7. Explicit canonical turn submission
+    submitUserTurn(cleanText, { displayText, normalized });
+  }
+
+  if (typeof window !== 'undefined') {
+    window.submitTypedMessage = submitTypedMessage;
+  }
+
+  function submitTextMessage() {
+    if (!userTextInput) return;
+    const text = userTextInput.value.trim();
+    if (!text) return;
+    userTextInput.value = '';
+    submitTypedMessage(text);
   }
 
   function setupSpeechRecognition() {
@@ -2502,7 +2543,7 @@
         updateSTTDebugUI({
           interim: '',
           final: displayText,
-          status: 'COMPLETED FINAL (LLM SUBMISSION HELD)'
+          status: 'COMPLETED FINAL'
         });
 
         // 1. Separate UI message rendering
@@ -2752,11 +2793,13 @@
   function appendTranscriptChunk(role, text) {
     if (role === 'assistant') {
       if (!currentAssistantBubble) {
+        console.log(`[CLIENT] ASSISTANT_RESPONSE_RECEIVED text="${text}"`);
         addTranscriptMessage('assistant', text);
       } else {
         currentAssistantBubble.textContent += text;
         transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
       }
+      console.log(`[UI] ASSISTANT_MESSAGE_RENDERED text="${text}"`);
     }
   }
 
@@ -2862,16 +2905,21 @@
 
   function sendMessage(message) {
     if (useHttpTransport) {
-      // In HTTP mode, user_speech goes through sendChatHTTP
-      if (message.type === 'user_speech') {
+      // In HTTP mode, user_speech and user_message go through sendChatHTTP
+      if (message.type === 'user_speech' || message.type === 'user_message') {
         sendChatHTTP(message.text, { turnId: message.turnId, generationId: message.generationId });
       }
       return;
     }
 
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
+    const isOpen = Boolean(ws && ws.readyState === WebSocket.OPEN);
+    if (message.type === 'user_speech' || message.type === 'user_message') {
+      console.log(`[WS] OPEN=${isOpen}`);
+    }
+
+    if (!isOpen) {
       console.warn(`[VOICE] WS_NOT_READY readyState=${ws ? ws.readyState : 'null'}`);
-      if (message.type === 'user_speech') {
+      if (message.type === 'user_speech' || message.type === 'user_message') {
         console.log(`[VOICE] TURN_QUEUED turnId=${message.turnId || 'none'} text="${message.text || ''}"`);
         pendingTurnQueue.push(message);
       }
@@ -2881,7 +2929,8 @@
       return;
     }
 
-    if (message.type === 'user_speech') {
+    if (message.type === 'user_speech' || message.type === 'user_message') {
+      console.log(`[WS] SEND user_message text="${message.text || ''}" turnId="${message.turnId || ''}"`);
       console.log(`[VOICE] WS_SEND text="${message.text || ''}" turnId="${message.turnId || ''}"`);
     }
     ws.send(JSON.stringify(message));
@@ -2966,6 +3015,8 @@
       renderCareFacilities,
       renderUserMessage,
       submitUserTurn,
+      submitTypedMessage,
+      submitTextMessage,
       updateSTTDebugUI,
       DEBUG_STT_ONLY,
     };

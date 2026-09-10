@@ -50,10 +50,12 @@ module.exports = async function handler(req, res) {
     } catch (e) { /* connection closed */ }
   };
 
+  try {
     const lang = language || 'en';
     const genId = req.body?.generationId || 'gen_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7);
     const resolvedTurnId = turnId || req.body?.turnId || ('turn_' + Date.now().toString(36));
 
+    console.log(`[SERVER] USER_MESSAGE_RECEIVED text="${text}" turnId="${resolvedTurnId}"`);
     console.log(`[VOICE] BACKEND_RECEIVED turnId="${resolvedTurnId}" text="${text}"`);
     send({
       type: 'user_turn_received',
@@ -61,6 +63,7 @@ module.exports = async function handler(req, res) {
       generationId: genId,
       timestamp: Date.now(),
     });
+    console.log(`[ORCHESTRATOR] START text="${text}"`);
     console.log(`[VOICE] ANALYSIS_START text="${text}"`);
 
     // ─── Initialize components ─────────────────────────────────────
@@ -329,6 +332,7 @@ module.exports = async function handler(req, res) {
     let sentenceBuffer = '';
     const sentenceQueue = [];
 
+    console.log(`[LLM] REQUEST text="${processedText}"`);
     const result = await llm.streamCompletion(
       null, // no abort signal in serverless
       // onTextChunk: accumulate sentences
@@ -366,6 +370,23 @@ module.exports = async function handler(req, res) {
       sentenceQueue.push(sentenceBuffer.trim());
       sentenceBuffer = '';
     }
+
+    const fullResponseText = sentenceQueue.join(' ').trim() || processedText;
+    console.log(`[LLM] RESPONSE text="${fullResponseText}"`);
+    console.log(`[SERVER] ASSISTANT_RESPONSE text="${fullResponseText}"`);
+    console.log(`[VOICE] ASSISTANT_RESPONSE text="${fullResponseText}"`);
+    send({
+      type: 'assistant_response',
+      role: 'assistant',
+      text: fullResponseText,
+      generationId: genId,
+    });
+    send({
+      type: 'transcript',
+      role: 'assistant',
+      text: fullResponseText,
+      generationId: genId,
+    });
 
     if (sentenceQueue.length > 0) {
       send({ type: 'state_change', state: 'speaking', generationId: genId });

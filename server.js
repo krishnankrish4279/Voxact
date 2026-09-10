@@ -159,8 +159,12 @@ wss.on('connection', (ws) => {
 
       switch (message.type) {
         case 'start_session':
-          // Client is ready, start with greeting
-          await orchestrator.startSession();
+          // Only start session greeting if no user turn has already been processed or is active
+          if (!orchestrator.lastUserSpeech && orchestrator.state === 'idle') {
+            await orchestrator.startSession();
+          } else {
+            console.log(`[Server] Skipping start_session greeting because user turn is already active (state: ${orchestrator.state})`);
+          }
           break;
 
         case 'set_language':
@@ -175,8 +179,10 @@ wss.on('connection', (ws) => {
           }
           break;
 
+        case 'user_message':
         case 'user_speech':
           const turnId = message.turnId || ('turn_' + Date.now().toString(36));
+          console.log(`[SERVER] USER_MESSAGE_RECEIVED text="${message.text || message.rawTranscript || ''}" turnId="${turnId}"`);
           console.log(`[VOICE] BACKEND_RECEIVED turnId="${turnId}" text="${message.text || message.rawTranscript || ''}"`);
           sendToClient({
             type: 'user_turn_received',
@@ -198,7 +204,7 @@ wss.on('connection', (ws) => {
               orchestrator.llm.careDeclined = true;
             }
           }
-          // User finished speaking (final transcription)
+          // User finished speaking (final transcription) or typed message
           await orchestrator.handleUserSpeech(message);
           break;
 

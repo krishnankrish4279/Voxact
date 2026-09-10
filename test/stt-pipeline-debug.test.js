@@ -240,13 +240,13 @@ async function runSTTTests() {
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  // TEST 5: Verify DEBUG_STT_ONLY Flag is active
-  // Proves that submissions to LLM are held during this debugging phase
+  // TEST 5: Verify DEBUG_STT_ONLY Flag is disabled
+  // Proves that submissions to LLM are enabled for production consultation
   // ══════════════════════════════════════════════════════════════════════
   section('TEST 5: Verify DEBUG_STT_ONLY Flag');
   try {
-    assert.strictEqual(DEBUG_STT_ONLY, true, 'DEBUG_STT_ONLY must be true during this debugging phase');
-    pass('DEBUG_STT_ONLY = true verified: LLM submissions strictly held');
+    assert.strictEqual(DEBUG_STT_ONLY, false, 'DEBUG_STT_ONLY must be false so turns reach LLM');
+    pass('DEBUG_STT_ONLY = false verified: LLM submissions enabled');
   } catch (err) {
     fail('TEST 5 Failed', err);
   }

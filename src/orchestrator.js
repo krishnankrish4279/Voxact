@@ -376,6 +376,7 @@ class Orchestrator extends EventEmitter {
     const isAmbiguous = normalizedData.isAmbiguous;
     const clarificationPrompt = normalizedData.clarificationPrompt;
 
+    console.log(`[ORCHESTRATOR] START text="${rawTranscript}"`);
     console.log(`[Orchestrator:${this.sessionId}] User said: raw="${rawTranscript}" | normalized="${normalizedTranscript}" (terms: ${detectedMedicalTerms.length})`);
 
     // Contextual normalization of conversational control phrases (e.g. "ஒரு" -> "பொரு" if speaking/waiting)
@@ -389,7 +390,7 @@ class Orchestrator extends EventEmitter {
 
     // If currently speaking or doing tool work, this is an interruption
     if (this.state === STATE.SPEAKING || this.state === STATE.TOOL_WORK) {
-      await this._handleInterruption(normalizedControl || normalizedTranscript, { rawTranscript, normalizedTranscript, detectedMedicalTerms });
+      await this._handleInterruption(normalizedControl || normalizedTranscript, { rawTranscript, normalizedTranscript, detectedMedicalTerms, generationId: clientGenId });
       return;
     }
 
@@ -499,7 +500,7 @@ class Orchestrator extends EventEmitter {
     const textToProcess = cleanedText || newText;
 
     // 7. Process the new input with a fresh generation
-    await this._processUserInput(textToProcess, meta);
+    await this._processUserInput(textToProcess, meta, meta.generationId || null);
   }
 
   /**
@@ -633,6 +634,7 @@ class Orchestrator extends EventEmitter {
     const responseId = `resp_${genId}_${++this.responseTurnCounter}`;
     let segmentIndex = 0;
 
+    console.log(`[LLM] REQUEST text="${text}"`);
     try {
       const result = await this.llm.streamCompletion(
         signal,
@@ -649,7 +651,7 @@ class Orchestrator extends EventEmitter {
           sentenceBuffer += chunk;
 
           // Send text to client for visual display
-          this.sendToClient({ type: 'transcript_chunk', role: 'assistant', text: chunk });
+          this.sendToClient({ type: 'transcript_chunk', role: 'assistant', text: chunk, generationId: genId });
 
           // When we have a complete sentence, synthesize it
           let sentenceEnd = this._findSentenceEnd(sentenceBuffer);
@@ -691,8 +693,25 @@ class Orchestrator extends EventEmitter {
       this.latency.recordEvent(this.sessionId, genId, 'llm_complete');
 
       if (textBuffer.trim().length > 0) {
-        console.log(`[VOICE] ASSISTANT_RESPONSE text="${textBuffer.trim()}"`);
+        const fullAssistantText = textBuffer.trim();
+        console.log(`[LLM] RESPONSE text="${fullAssistantText}"`);
+        console.log(`[SERVER] ASSISTANT_RESPONSE text="${fullAssistantText}"`);
+        console.log(`[VOICE] ASSISTANT_RESPONSE text="${fullAssistantText}"`);
         console.log(`[VOICE] ANALYSIS_END text="${text}"`);
+
+        // Send full assistant response event to client for guaranteed UI render and turn completion
+        this.sendToClient({
+          type: 'assistant_response',
+          role: 'assistant',
+          text: fullAssistantText,
+          generationId: genId,
+        });
+        this.sendToClient({
+          type: 'transcript',
+          role: 'assistant',
+          text: fullAssistantText,
+          generationId: genId,
+        });
       }
 
       // Synthesize any remaining text in the buffer
@@ -959,12 +978,21 @@ class Orchestrator extends EventEmitter {
       }
 
       if (followUpBuffer.trim().length > 0) {
-        console.log(`[VOICE] ASSISTANT_RESPONSE text="${followUpBuffer.trim()}"`);
+        const fullFollowUpText = followUpBuffer.trim();
+        console.log(`[LLM] RESPONSE text="${fullFollowUpText}"`);
+        console.log(`[SERVER] ASSISTANT_RESPONSE text="${fullFollowUpText}"`);
+        console.log(`[VOICE] ASSISTANT_RESPONSE text="${fullFollowUpText}"`);
         console.log(`[VOICE] ANALYSIS_END text="${this.lastUserSpeech || ''}"`);
+        this.sendToClient({
+          type: 'assistant_response',
+          role: 'assistant',
+          text: fullFollowUpText,
+          generationId: genId,
+        });
         this.sendToClient({
           type: 'transcript',
           role: 'assistant',
-          text: followUpBuffer.trim(),
+          text: fullFollowUpText,
           generationId: genId,
         });
       }
