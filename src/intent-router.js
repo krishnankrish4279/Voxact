@@ -591,17 +591,23 @@ function classifyUserIntent(userText, context = {}) {
   // 13. SYMPTOM INFORMATION (stating symptoms or answering questions)
   // ─────────────────────────────────────────────────────────────────
   const hasSymptomKeywords = (
-    /\b(fever|headache|migraine|dizzy|dizziness|nausea|vomit|vomiting|cough|sore\s*throat|chest\s*pain|stomach\s*pain|abdominal|back\s*pain|knee\s*pain|knees|joint\s*pain|rash|weakness|fatigue|temperature|chills|shivering|body\s*pain|hurts|pain|shortness\s*of\s*breath|shortness_of_breath|breathing|breathless|eye\s*pain|vision|eyes?|tooth|teeth|toothache|dental)\b/i.test(lower) ||
-    /காய்ச்சல்|தலைவலி|நெஞ்சு\s*வலி|வயிற்று\s*வலி|முழங்கால்\s*வலி|முட்டி\s*வலி|வாந்தி|மயக்கம்|இருமல்|தொண்டை\s*வலி|சோர்வு|உடம்பு\s*வலி|வலிக்குது|மூச்சுத்திணறல்|மூச்சு\s*வாங்குது|மூச்சு\s*திணறல்|கண்\s*வலி|பல்\s*வலி/i.test(text) ||
-    /बुखार|सिरदर्द|सीने\s*में\s*दर्द|पेट\s*दर्द|घुटने\s*में\s*दर्द|उल्टी|चक्कर|खांसी|गले\s*में\s*खराश|थकान|बदन\s*दर्द|सांस|आँख|आंख|दांत/i.test(text) ||
+    /\b(fever|headache|migraine|dizzy|dizziness|nausea|vomit|vomiting|cough|sore\s*throat|chest\s*pain|stomach\s*pain|abdominal|back\s*pain|knee\s*pain|knees|joint\s*pain|leg\s*pain|leg\s*swelling|swollen|swelling|calf|thigh|shin|rash|weakness|fatigue|temperature|chills|shivering|body\s*pain|hurts|pain|shortness\s*of\s*breath|shortness_of_breath|breathing|breathless|eye\s*pain|vision|eyes?|tooth|teeth|toothache|dental)\b/i.test(lower) ||
+    /காய்ச்சல்|தலைவலி|நெஞ்சு\s*வலி|வயிற்று\s*வலி|முழங்கால்\s*வலி|முட்டி\s*வலி|கால்\s*வலி|கால்\s*வீக்கம்|வீக்கம்|வாந்தி|மயக்கம்|இருமல்|தொண்டை\s*வலி|சோர்வு|உடம்பு\s*வலி|வலிக்குது|மூச்சுத்திணறல்|மூச்சு\s*வாங்குது|மூச்சு\s*திணறல்|கண்\s*வலி|பல்\s*வலி/i.test(text) ||
+    /बुखार|सिरदर्द|सीने\s*में\s*दर्द|पेट\s*दर्द|घुटने\s*में\s*दर्द|पैर\s*में\s*दर्द|टांग\s*में\s*दर्द|सूजन|उल्टी|चक्कर|खांसी|गले\s*में\s*खराश|थकान|बदन\s*दर्द|सांस|आँख|आंख|दांत/i.test(text) ||
     // Numerical temperature or age responses (e.g. "101 and 25 years old", "38 degrees", "28 years old")
     /\b(?:10[0-5]|9[7-9])(?:\.[0-9])?\s*(?:degrees|f|c)?\b/i.test(lower) ||
     /\b(?:i\s*am|age\s*is|age)\s*\d{1,3}\b/i.test(lower) ||
     /\bno\s+allergies|allergic\s+to\b/i.test(lower)
   );
 
-  if (hasSymptomKeywords) {
-    return { intent: INTENTS.SYMPTOM_INFORMATION, details: {} };
+  const isBodyPartClarification = (
+    /\b(leg|legs|left\s+leg|right\s+leg|both\s+legs|knee|knees|head|chest|back|arm|arms|foot|feet|stomach|belly|abdomen|throat|shoulder|hip|neck|ankle|calf|thigh|shin)\b/i.test(lower) ||
+    /(?:கால்|காலில்|இடது\s*கால்|வலது\s*கால்|முழங்கால்|தலை|நெஞ்சு|முதுகு|கை|வயிறு|தொண்டை|கழுத்து)/i.test(text) ||
+    /(?:पैर|टांग|दोनों\s*पैर|घुटना|सिर|सर|सीना|छाती|पीठ|कमर|हाथ|पेट|गला|गर्दन)/i.test(text)
+  );
+
+  if (hasSymptomKeywords || isBodyPartClarification) {
+    return { intent: INTENTS.SYMPTOM_INFORMATION, details: { isBodyPartClarification: Boolean(isBodyPartClarification) } };
   }
 
   // ─────────────────────────────────────────────────────────────────

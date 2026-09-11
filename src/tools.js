@@ -88,6 +88,16 @@ const SYMPTOM_CONDITIONS = {
     { condition: 'Patellofemoral Pain Syndrome', confidence: 0.55, patternMatchScore: 0.55, urgency: 'low' },
     { condition: 'Ligament or Meniscus Strain', confidence: 0.45, patternMatchScore: 0.45, urgency: 'medium' },
   ],
+  'leg pain': [
+    { condition: 'Muscle Strain / Overuse Injury', confidence: 0.70, patternMatchScore: 0.70, urgency: 'low' },
+    { condition: 'Sciatica / Lumbar Radiculopathy', confidence: 0.55, patternMatchScore: 0.55, urgency: 'low' },
+    { condition: 'Deep Vein Thrombosis / Vascular Concern', confidence: 0.35, patternMatchScore: 0.35, urgency: 'high' },
+  ],
+  'leg swelling': [
+    { condition: 'Peripheral Edema / Venous Insufficiency', confidence: 0.65, patternMatchScore: 0.65, urgency: 'medium' },
+    { condition: 'Deep Vein Thrombosis Risk', confidence: 0.45, patternMatchScore: 0.45, urgency: 'high' },
+    { condition: 'Soft Tissue Strain / Inflammation', confidence: 0.40, patternMatchScore: 0.40, urgency: 'low' },
+  ],
   vomiting: [
     { condition: 'Gastroenteritis', confidence: 0.72, patternMatchScore: 0.72, urgency: 'medium' },
     { condition: 'Food Poisoning', confidence: 0.60, patternMatchScore: 0.60, urgency: 'medium' },

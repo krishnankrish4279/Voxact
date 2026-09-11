@@ -23,7 +23,7 @@ const RimeClient = require('./rime-client');
 const LLMClient = require('./llm-client');
 const FillerManager = require('./filler-manager');
 const LatencyTracker = require('./latency-tracker');
-const { normalizeMedicalSpeech } = require('./medical-transcriber');
+const { normalizeMedicalSpeech, extractClinicalSymptoms } = require('./medical-transcriber');
 const { TOOL_FUNCTIONS } = require('./tools');
 const { classifyUserIntent, INTENTS, isWaitInterruption, stripControlPrefix, normalizeConversationalControl } = require('./intent-router');
 
@@ -530,9 +530,10 @@ class Orchestrator extends EventEmitter {
 
     // Classify user intent
     const previousAssistantMsg = [...this.llm.conversationHistory].reverse().find(m => m.role === 'assistant' && m.content)?.content || '';
-    const { intent } = classifyUserIntent(text, {
+    const { intent, details } = classifyUserIntent(text, {
       previousAssistantMsg,
       pendingAction: this.llm.pendingAction,
+      pendingQuestion: this.llm.pendingQuestion,
       nearbyCareStatus: this.nearbyCareStatus,
     });
 
@@ -560,6 +561,15 @@ class Orchestrator extends EventEmitter {
         if (!this.accumulatedSymptoms.includes(s)) {
           this.accumulatedSymptoms.push(s);
         }
+      }
+      // Check for body part clarification like "leg" when prior pain or leg pain was reported
+      const isLegClarification = /^(?:in\s+my\s+|in\s+the\s+|it'?s\s+my\s+|my\s+)?(?:leg|legs|left\s+leg|right\s+leg|both\s+legs|calf|thigh|shin)$/i.test(text.trim()) ||
+        /^(?:கால்|காலில்|எனது\s*கால்|இடது\s*கால்|வலது\s*கால்)$/i.test(text.trim()) ||
+        /^(?:पैर|टांग|दोनों\s*पैर)$/i.test(text.trim());
+      const hasPriorPain = this.accumulatedSymptoms.some(s => s.toLowerCase().includes('pain')) ||
+        this.llm.conversationHistory.some(m => m.role === 'user' && /\b(pain|hurts|discomfort|வலி|दर्द)\b/i.test(m.content));
+      if (isLegClarification && hasPriorPain && !this.accumulatedSymptoms.includes('leg pain')) {
+        this.accumulatedSymptoms.push('leg pain');
       }
       this.llm.accumulatedSymptoms = this.accumulatedSymptoms;
     }
@@ -1299,13 +1309,26 @@ class Orchestrator extends EventEmitter {
     if (!text || typeof text !== 'string') return [];
     const lower = text.toLowerCase();
     const knownSymptoms = [
+      'leg pain', 'leg swelling', 'knee pain',
       'headache', 'fever', 'chest pain', 'nausea', 'dizziness', 'sore throat',
       'cough', 'stomach pain', 'fatigue', 'back pain', 'shortness of breath',
       'rash', 'vomiting', 'body ache', 'migraine', 'chills', 'weakness', 'diarrhea',
-      'தலைவலி', 'காய்ச்சல்', 'நெஞ்சு வலி', 'மயக்கம்', 'தொண்டை வலி', 'இருமல்', 'வயிற்று வலி', 'வாந்தி', 'சோர்வு',
+      'கால் வலி', 'முழங்கால் வலி', 'தலைவலி', 'காய்ச்சல்', 'நெஞ்சு வலி', 'மயக்கம்', 'தொண்டை வலி', 'இருமல்', 'வயிற்று வலி', 'வாந்தி', 'சோர்வு',
       'सिरदर्द', 'बुखार', 'सीने में दर्द', 'चक्कर', 'गले में खराश', 'खांसी', 'पेट दर्द', 'उल्टी', 'थकान'
     ];
-    return knownSymptoms.filter(s => lower.includes(s.toLowerCase()));
+    const directMatches = knownSymptoms.filter(s => lower.includes(s.toLowerCase()));
+    try {
+      const clinical = extractClinicalSymptoms(text, this.language || 'en');
+      if (clinical && Array.isArray(clinical.symptoms)) {
+        for (const s of clinical.symptoms) {
+          const canonical = s.toLowerCase();
+          if (!directMatches.includes(canonical)) {
+            directMatches.push(canonical);
+          }
+        }
+      }
+    } catch (e) {}
+    return directMatches;
   }
 
   /**

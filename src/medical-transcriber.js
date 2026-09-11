@@ -475,6 +475,26 @@ function normalizeMedicalSpeech(rawTranscript, language = 'en') {
       { canonical: 'abdominal pain', category: 'gastrointestinal', severity: 'medium', variants: ['stomach pain', 'stomach ache', 'belly pain', 'tummy ache'] },
       { canonical: 'dizziness', category: 'neurological_cardiac', severity: 'high', variants: ['lightheaded', 'feeling dizzy', 'fainted', 'passed out'] },
       { canonical: 'knee pain', category: 'musculoskeletal', severity: 'low', variants: ['knees hurt', 'knee hurts', 'pain in knee', 'pain in knees', 'pain in my knee', 'pain in my knees', 'knee ache', 'sore knees', 'swollen knees', 'knees pain'] },
+      {
+        canonical: 'leg pain',
+        category: 'musculoskeletal',
+        severity: 'low',
+        variants: [
+          'leg pain', 'legs hurt', 'leg hurts', 'pain in leg', 'pain in legs', 'pain in my leg', 'pain in my legs',
+          'leg ache', 'sore leg', 'sore legs', 'legs are hurting', 'leg is hurting', 'pain in the leg', 'hurts my leg',
+          'pain in my calf', 'calf pain', 'thigh pain', 'shin pain', 'hamstring pain'
+        ]
+      },
+      {
+        canonical: 'leg swelling',
+        category: 'musculoskeletal',
+        severity: 'medium',
+        variants: [
+          'swollen leg', 'swollen legs', 'leg is swollen', 'legs are swollen', 'swelling in leg',
+          'swelling in my leg', 'swelling in legs', 'swollen calf', 'calf swelling', 'swollen ankle',
+          'swollen foot', 'swollen feet', 'leg swelling'
+        ]
+      },
       { canonical: 'vomiting', category: 'gastrointestinal', severity: 'medium', variants: ['throwing up', 'threw up', 'puking', 'vomit', 'vomited', 'vomiting'] },
       { canonical: 'weakness', category: 'general', severity: 'low', variants: ['feeling weak', 'very weak', 'so weak', 'exhausted', 'loss of strength'] },
     ];
@@ -582,6 +602,10 @@ function extractClinicalSymptoms(text, language = 'en') {
       name = 'Abdominal pain';
     } else if (term.canonical === 'முழங்கால் வலி' || term.canonical === 'knee pain') {
       name = 'Knee pain';
+    } else if (term.canonical === 'leg pain' || term.canonical === 'கால் வலி') {
+      name = 'Leg pain';
+    } else if (term.canonical === 'leg swelling') {
+      name = 'Leg swelling';
     } else if (term.canonical === 'வாந்தி' || term.canonical === 'vomiting') {
       name = 'Vomiting';
     } else if (term.canonical === 'பலவீனம்' || term.canonical === 'weakness') {
@@ -614,6 +638,16 @@ function extractClinicalSymptoms(text, language = 'en') {
   if ((/\b(knee|knees)\b/i.test(normLower) || /(?:முழங்கால்|முட்டி|muzhang|mutti)/i.test(rawLower) || /(?:முழங்கால்|முட்டி|muzhang|mutti)/i.test(normLower)) &&
       (/\b(pain|hurt|hurts|ache|aches|sore|injury|swelling)\b/i.test(normLower) || /(?:வலி|நோவு|pain|வீக்கம்)/i.test(rawLower) || /(?:வலி|நோவு|pain|வீக்கம்)/i.test(normLower))) {
     if (!symptoms.includes('Knee pain')) symptoms.push('Knee pain');
+  }
+  if (/\b(leg|legs|calf|thigh|shin)\b/i.test(normLower) || /(?:காலில்|கால்|kaal)/i.test(rawLower) || /(?:पैर|टांग)/.test(rawLower)) {
+    if (/\b(pain|hurt|hurts|ache|aches|sore|injury)\b/i.test(normLower) || /(?:வலி|நோவு|pain)/i.test(rawLower) || /(?:दर्द)/.test(rawLower)) {
+      if (!symptoms.includes('Leg pain') && !symptoms.some(s => s.toLowerCase() === 'knee pain' && /\b(knee|knees|முழங்கால்|முட்டி)\b/i.test(normLower))) {
+        symptoms.push('Leg pain');
+      }
+    }
+    if (/\b(swollen|swelling|puffy|enlarged)\b/i.test(normLower) || /(?:வீக்கம்|வீங்கிய)/i.test(rawLower) || /(?:सूजन)/.test(rawLower)) {
+      if (!symptoms.includes('Leg swelling')) symptoms.push('Leg swelling');
+    }
   }
   if (/\b(vomit|vomiting|threw up|throwing up)\b/i.test(normLower) || /(?:வாந்தி|உல்டி|vomit)/i.test(rawLower) || /(?:வாந்தி|உல்டி|vomit)/i.test(normLower)) {
     if (!symptoms.includes('Vomiting')) symptoms.push('Vomiting');
@@ -663,7 +697,7 @@ function extractClinicalSymptoms(text, language = 'en') {
   if (/\b(back|spine)\b/i.test(normLower) || /(?:முதுகு|mudhugu)/i.test(rawLower) || /(?:पीठ|कमर)/.test(rawLower)) {
     addBodyPart('back');
   }
-  if (/\b(leg|legs|foot|feet|ankle)\b/i.test(normLower) || /(?:கால்|காலில்|kaal)/i.test(rawLower) || /(?:पैर|टांग)/.test(rawLower)) {
+  if (/\b(leg|legs|foot|feet|ankle|calf|thigh|shin)\b/i.test(normLower) || /(?:கால்|காலில்|kaal)/i.test(rawLower) || /(?:पैर|टांग)/.test(rawLower)) {
     addBodyPart('leg');
   }
   if (/\b(arm|arms|hand|hands|shoulder)\b/i.test(normLower) || /(?:கை|கையில்|kai)/i.test(rawLower) || /(?:हाथ|कंधा)/.test(rawLower)) {
@@ -690,9 +724,17 @@ function extractClinicalSymptoms(text, language = 'en') {
     mappedSeverity = 'severe';
   }
 
+  const primarySymptomName = filteredSymptoms[0] || null;
+  const primarySymptomType = primarySymptomName
+    ? (primarySymptomName.toLowerCase().includes('pain') ? 'pain' : primarySymptomName.toLowerCase().includes('swell') ? 'swelling' : primarySymptomName.toLowerCase())
+    : null;
+
   return {
     symptoms: filteredSymptoms,
     bodyParts,
+    bodyPart: bodyParts[0] || null,
+    symptom: primarySymptomType,
+    canonicalSymptom: primarySymptomName,
     severity: mappedSeverity,
     duration,
     associatedSymptoms: filteredSymptoms.slice(1),

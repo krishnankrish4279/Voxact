@@ -328,7 +328,7 @@ function determineUserCareNeed(options = {}) {
   if (/\b(pregnancy|pregnant|labor|contractions|maternity|மகப்பேறு|गर्भावस्था)\b/i.test(symptomsStr)) {
     return 'maternity';
   }
-  if (/\b(knee|fracture|broken\s*bone|joint\s*dislocation)\b/i.test(symptomsStr)) {
+  if (/\b(knee|leg|fracture|broken\s*bone|joint\s*dislocation)\b/i.test(symptomsStr)) {
     return 'orthopedic';
   }
 
