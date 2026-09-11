@@ -1424,11 +1424,8 @@ class LLMClient {
       if (err.name === 'AbortError' || signal?.aborted) {
         return { cancelled: true, text: '', toolCalls: [] };
       }
-      if (err.status === 429 || err.message?.includes('credits') || err.message?.includes('quota')) {
-        console.warn('[LLM] OpenAI quota exhausted (429), seamlessly falling back to internal follow-up generator');
-        return this._simulateFollowUp(signal, onTextChunk);
-      }
-      throw err;
+      console.warn('[LLM] Provider follow-up error (' + (err.status || err.message) + '), seamlessly falling back to internal follow-up generator');
+      return this._simulateFollowUp(signal, onTextChunk);
     }
   }
 
@@ -1455,176 +1452,32 @@ class LLMClient {
 
     // Strip leading conversational control prefix if user started with "பொரு", "wait", etc. then continued
     const lastUserMsg = stripControlPrefix(rawUserMsg) || rawUserMsg;
-    const lower = lastUserMsg.toLowerCase()    // 2c. Comprehensive clinical symptom pattern matching supporting English, Tamil, Hindi, and Code-switching
-    const SYMPTOM_PATTERNS = [
-      { canonical: 'headache', triggers: ['headache', 'head hurts', 'head ache', 'migraine', 'throbbing head', 'pain in my head', 'தலைவலி', 'தலவலி', 'தல வலி', 'सिरदर्द', 'सिर दर्द', 'सरदर्द', 'सर में दर्द'] },
-      { canonical: 'dizziness', triggers: ['dizzy', 'dizziness', 'lightheaded', 'light headed', 'vertigo', 'room spinning', 'unsteady', 'மயக்கம்', 'தலைசுற்றல்', 'चक्कर', 'चक्कर आना'] },
-      { canonical: 'nausea', triggers: ['nausea', 'nauseous', 'sick to my stomach', 'sick to stomach', 'queasy', 'குமட்டல்', 'जी मिचलाना'] },
-      { canonical: 'fever', triggers: ['fever', 'feverish', 'high temperature', 'temperature', 'chills', 'shivering', 'burning up', 'sweats', 'sweating', 'காய்ச்சல்', 'சூடு', 'बुखार', 'तापमान', 'तेज बुखार'] },
-      { canonical: 'chest pain', triggers: ['chest pain', 'chest hurts', 'chest tightness', 'chest pressure', 'angina', 'tightness in chest', 'heart hurts', 'நெஞ்சு வலி', 'மார்பு வலி', 'सीने में दर्द', 'छाती में दर्द'] },
-      { canonical: 'shortness_of_breath', triggers: ['shortness of breath', 'breathless', 'breathing difficulty', 'difficulty breathing', "can't breathe properly", 'trouble breathing', 'hard to breathe', 'breathing problem', 'wheezing', 'can\'t breathe', 'gasping', 'shortness of breath now', 'மூச்சுத்திணறல்', 'மூச்சு திணறல்', 'மூச்சு விட கஷ்டமா இருக்கு', 'மூச்சு வாங்குது', 'மூச்சுக்குழல்', 'சாப்பாடு', 'सांस लेने में तकलीफ', 'सांस फूलना', 'सांस लेने में दिक्कत'] },
-      { canonical: 'stomach pain', triggers: ['stomach pain', 'stomach ache', 'stomach hurts', 'belly ache', 'abdominal pain', 'cramps', 'cramping', 'gut hurts', 'tummy ache', 'வயிற்று வலி', 'வயிறு வலி', 'पेट दर्द', 'पेट में दर्द'] },
-      { canonical: 'fatigue', triggers: ['fatigue', 'fatigued', 'exhausted', 'exhaustion', 'tired', 'tiredness', 'no energy', 'drained', 'சோர்வு', 'களைப்பு', 'थकान', 'थकावट'] },
-      { canonical: 'sore throat', triggers: ['sore throat', 'throat hurts', 'scratchy throat', 'hard to swallow', 'swollen glands', 'தொண்டை வலி', 'கரகரப்பு', 'गले में खराश', 'गले में दर्द'] },
-      { canonical: 'cough', triggers: ['cough', 'coughing', 'hack', 'hacking', 'dry cough', 'phlegm', 'இருமல்', 'சளி', 'खांसी', 'कफ'] },
-      { canonical: 'back pain', triggers: ['back pain', 'back hurts', 'lower back pain', 'backache', 'spine hurts', 'முதுகு வலி', 'पीठ दर्द', 'कमர் दर्द'] },
-      { canonical: 'rash', triggers: ['rash', 'hives', 'itching', 'itchy skin', 'bumps', 'red spots', 'skin irritation', 'அரிப்பு', 'தடிப்பு', 'खुजली', 'चकत्ते'] },
-      { canonical: 'knee pain', triggers: ['knee pain', 'knees hurt', 'knee hurts', 'pain in my knees', 'pain in my knee', 'hurts when i walk', 'hurt when i walk', 'knee ache', 'sore knees', 'swollen knees', 'knees', 'knee', 'முழங்கால் வலி', 'முழங்கால்', 'முழங்கால்ல வலி', 'முட்டி வலி', 'முட்டில வலி', 'முட்டில பெயின்', 'முட்டில pain', 'muzhang kaal vali', 'mutti vali', 'muttile pain', 'knee la romba pain', 'घुटने में दर्द', 'घुटने का दर्द', 'घुटनों में दर्द'] },
-      { canonical: 'leg pain', triggers: ['leg pain', 'legs hurt', 'leg hurts', 'pain in my leg', 'pain in my legs', 'pain in leg', 'pain in legs', 'leg ache', 'sore leg', 'sore legs', 'calf pain', 'thigh pain', 'shin pain', 'கால் வலி', 'காலில் வலி', 'காலில் பெயின்', 'காலில் pain', 'टांग में दर्द', 'पैर में दर्द', 'पिंडली में दर्द'] },
-      { canonical: 'leg swelling', triggers: ['leg swelling', 'legs swelling', 'swollen leg', 'swollen legs', 'swelling in my leg', 'swelling in my legs', 'leg is swollen', 'legs are swollen', 'swelling in leg', 'காலில் வீக்கம்', 'கால் வீக்கம்', 'टांग में सूजन', 'पैर में सूजन'] },
-      { canonical: 'vomiting', triggers: ['vomit', 'vomiting', 'threw up', 'throwing up', 'puking', 'வாந்தி', 'வாந்தி வருது', 'வாந்தி இருக்கு', 'enaku vomit aagudhu', 'vomit aagudhu', 'उल्टी', 'उल्टी होना'] },
-      { canonical: 'weakness', triggers: ['weakness', 'weak', 'very weak', 'so weak', 'loss of strength', 'பலவீனம்', 'உடம்பு பலவீனம்', 'முடியல', 'உடம்பு ரொம்ப முடியல', 'weak-aa இருக்கு', 'weak aa irukku', 'udambu romba weak aa irukku', 'udambu romba mudiyala', 'कमजोरी', 'अशक्तता'] },
-    ];
+    const lower = lastUserMsg.toLowerCase().trim();
 
-    const currentTurnDetected = [];
-    for (const item of SYMPTOM_PATTERNS) {
-      if (item.triggers.some(t => lower.includes(t.toLowerCase()))) {
-        currentTurnDetected.push(item.canonical);
-      }
-    }
+    // 2. Medicine / Drug guidance request safety flow
+    const isMedicineRequest = /\b(medicine|medication|tablets?|pills?|drug|syrup|dosage|what can i take|take for)\b/i.test(lower) ||
+      lastUserMsg.includes('மருந்து') || lastUserMsg.includes('மாத்திரை') ||
+      lastUserMsg.includes('दवा') || lastUserMsg.includes('दवाई') || lastUserMsg.includes('गोली');
 
-    // Direct fallback for leg pain/swelling combinations
-    const hasLeg = /\b(leg|legs|calf|thigh|shin)\b/i.test(lower) || /கால்|காலில்/i.test(lastUserMsg) || /टांग|पैर/i.test(lastUserMsg);
-    const hasPain = /\b(pain|hurts|hurt|aching|ache|sore)\b/i.test(lower) || /வலி/i.test(lastUserMsg) || /दर्द/i.test(lastUserMsg);
-    const hasSwelling = /\b(swelling|swollen|puffy|enlarged)\b/i.test(lower) || /வீக்கம்/i.test(lastUserMsg) || /सूजन/i.test(lastUserMsg);
-    if (hasLeg && hasPain && !currentTurnDetected.includes('leg pain')) {
-      currentTurnDetected.push('leg pain');
-    }
-    if (hasLeg && hasSwelling && !currentTurnDetected.includes('leg swelling')) {
-      currentTurnDetected.push('leg swelling');
-    }
+    if (isMedicineRequest) {
+      let medResponse = '';
+      const isVomiting = lower.includes('vomit') || lastUserMsg.includes('வாந்தி') || lastUserMsg.includes('உல்டி') || lastUserMsg.includes('उल्टी');
+      const isHeadache = lower.includes('headache') || lower.includes('head') || lastUserMsg.includes('தலைவலி') || lastUserMsg.includes('தலவலி') || lastUserMsg.includes('सिरदर्द');
+      const isFever = lower.includes('fever') || lastUserMsg.includes('காய்ச்சல்') || lastUserMsg.includes('ஜுரம்') || lastUserMsg.includes('बुखार');
 
-    // Deterministic clinical symptom extraction from medical-transcriber
-    const clinicalExtraction = extractClinicalSymptoms(lastUserMsg, lang);
-    if (clinicalExtraction && clinicalExtraction.symptoms) {
-      for (const s of clinicalExtraction.symptoms) {
-        const canonical = s.toLowerCase();
-        if (!currentTurnDetected.includes(canonical)) {
-          currentTurnDetected.push(canonical);
-        }
-      }
-    }
-
-    // Multi-turn body part clarification handlers (e.g. user says "leg", "knee")
-    const isLegClarification = /^(?:in\s+my\s+|in\s+the\s+|it'?s\s+my\s+|my\s+)?(?:leg|legs|left\s+leg|right\s+leg|both\s+legs|calf|thigh|shin)$/i.test(lower.trim()) ||
-      /^(?:கால்|காலில்|எனது\s*கால்|இடது\s*கால்|வலது\s*கால்)$/i.test(lastUserMsg.trim()) ||
-      /^(?:पैर|टांग|दोनों\s*पैर)$/i.test(lastUserMsg.trim());
-
-    const isKneeClarification = /^(?:in\s+my\s+|in\s+the\s+|it'?s\s+my\s+|my\s+)?(?:knee|knees|left\s+knee|right\s+knee|both\s+knees)$/i.test(lower.trim()) ||
-      /^(?:முழங்கால்|முட்டி|இடது\s*முழங்கால்|வலது\s*முழங்கால்)$/i.test(lastUserMsg.trim()) ||
-      /^(?:घुटना|घुटने|दोनों\s*घुटने)$/i.test(lastUserMsg.trim());
-
-    if (isLegClarification && (this.accumulatedSymptoms.includes('leg pain') || this.currentTriageState === 'leg_pain')) {
-      let clarificationText = '';
       if (lang === 'ta') {
-        clarificationText = "புரிந்துகொண்டேன், உங்கள் கால். இந்த கால் வலி எப்போது தொடங்கியது, வலி எவ்வளவு தீவிரமாக இருக்கிறது (0 முதல் 10 வரை), மற்றும் காலில் வீக்கம், சிவத்தல் அல்லது உணர்வின்மை உள்ளதா?";
-      } else if (lang === 'hi') {
-        clarificationText = "समझ गया, आपकी टांग में। कृपया बताएं कि यह दर्द कब शुरू हुआ, दर्द की तीव्रता 0 से 10 के पैमाने पर कितनी है, और क्या पैर में सूजन, लालिमा या सुन्नपन महसूस हो रहा है?";
-      } else {
-        clarificationText = "Understood, your leg. To continue assessing your leg pain, could you tell me when the pain started, how severe it is on a scale of 0 to 10, whether there was an injury, and if you notice any swelling or numbness?";
-      }
-      this.pendingQuestion = {
-        id: 'leg_pain_follow_up_severity_timeline',
-        symptom: 'leg pain',
-        bodyPart: 'leg',
-        stage: 2,
-        questionText: clarificationText
-      };
-      this.currentTriageState = 'leg_pain';
-
-      const sentences = clarificationText.match(/[^.!?।]+[.!?।]+/g) || [clarificationText];
-      let fullText = '';
-      for (const s of sentences) {
-        if (signal?.aborted) return { cancelled: true, text: fullText, toolCalls: [] };
-        await new Promise(r => setTimeout(r, 40));
-        fullText += s;
-        onTextChunk(s);
-      }
-      this.addAssistantMessage(fullText);
-      return {
-        cancelled: false,
-        text: fullText,
-        toolCalls: [],
-        firstTokenMs: 40,
-        totalMs: Date.now() - startTime,
-      };
-    }
-
-    if (isKneeClarification && (this.accumulatedSymptoms.includes('knee pain') || this.currentTriageState === 'knee_pain')) {
-      let clarificationText = '';
-      if (lang === 'ta') {
-        clarificationText = "புரிந்துகொண்டேன், உங்கள் முழங்கால். முழங்காலில் வீக்கம் உள்ளதா, ஒரு முழங்காலிலா அல்லது இரண்டிலுமா, மற்றும் உங்களால் சாதாரணமாக நடக்க முடிகிறதா?";
-      } else if (lang === 'hi') {
-        clarificationText = "समझ गया, आपके घुटने में। क्या घुटने में सूजन है, दर्द एक घुटने में है या दोनों में, और क्या आप सामान्य रूप से चल पा रहे हैं?";
-      } else {
-        clarificationText = "Understood, your knee. Could you let me know if you notice any swelling, whether one or both knees hurt, and if you are able to walk normally?";
-      }
-      this.pendingQuestion = {
-        id: 'knee_pain_follow_up',
-        symptom: 'knee pain',
-        bodyPart: 'knee',
-        stage: 2,
-        questionText: clarificationText
-      };
-      this.currentTriageState = 'knee_pain';
-
-      const sentences = clarificationText.match(/[^.!?।]+[.!?।]+/g) || [clarificationText];
-      let fullText = '';
-      for (const s of sentences) {
-        if (signal?.aborted) return { cancelled: true, text: fullText, toolCalls: [] };
-        await new Promise(r => setTimeout(r, 40));
-        fullText += s;
-        onTextChunk(s);
-      }
-      this.addAssistantMessage(fullText);
-      return {
-        cancelled: false,
-        text: fullText,
-        toolCalls: [],
-        firstTokenMs: 40,
-        totalMs: Date.now() - startTime,
-      };
-    }
-
-    // Resolve unlocated prior pain when user answers with a body part
-    const hasPriorPain = this.accumulatedSymptoms.some(s => s.toLowerCase().includes('pain')) ||
-      this.conversationHistory.some(m => m.role === 'user' && /\b(pain|hurts|discomfort|வலி|दर्द)\b/i.test(m.content)) ||
-      (this.pendingQuestion && (this.pendingQuestion.id === 'location_inquiry' || this.pendingQuestion.bodyPart === 'unknown'));
-
-    if (isLegClarification && hasPriorPain) {
-      if (!currentTurnDetected.includes('leg pain')) {
-        currentTurnDetected.push('leg pain');
-      }
-      if (!this.accumulatedSymptoms.includes('leg pain')) {
-        this.accumulatedSymptoms.push('leg pain');
-      }
-      this.currentTriageState = 'leg_pain';
-    }
-
-    const detected = [...currentTurnDetected];
-    // Only enrich with symptoms mentioned in previous turns if the user reported symptoms in this current turn
-    if (currentTurnDetected.length > 0) {
-      for (const msg of this.conversationHistory) {
-        if (msg.role === 'user') {
-          const msgLower = msg.content.toLowerCase();
-          for (const item of SYMPTOM_PATTERNS) {
-            if (!detected.includes(item.canonical) && item.triggers.some(t => msgLower.includes(t.toLowerCase()))) {
-              detected.push(item.canonical);
-            }
-          }
+        if (isVomiting) {
+          medResponse = "நான் குறிப்பிட்ட மருந்துகளையோ அளவுகளையோ பரிந்துரைக்க முடியாது, ஏனெனில் அவற்றை தகுதியுள்ள மருத்துவர் அல்லது மருந்தாளுநரே பரிந்துரைக்க வேண்டும். வாந்தியின் போது மிக முக்கியமானது, நீர்ச்சத்து இழப்பைத் தடுக்க சிறிது சிறிதாக தண்ணீர் அல்லது ஓ.ஆர்.எஸ் (ORS) கரைசல் குடிப்பதாகும். எண்ணெய் மற்றும் கடினமான உணவுகளைத் தவிர்க்கவும். வாந்தி நிற்காவிட்டாலோ அல்லது ரத்தம் இருந்தாலோ உடனே மருத்துவரை அணுகவும்.";
+        } else if (isHeadache) {
+          medResponse = "நான் குறிப்பிட்ட மருந்து பரிந்துரைகளை வழங்க முடியாது. தலைவலிக்கு அமைதியான இருட்டான அறையில் ஓய்வெடுத்து தேவையான அளவு தண்ணீர் குடிக்கவும். பாராசிட்டமால் போன்ற பொதுவான வலி நிவாரணிகளை மருந்தாளுநர் ஆலோசனையுடன் மட்டுமே உட்கொள்ள வேண்டும். வலி தீவிரமானால் மருத்துவரை அணுகவும்.";
+        } else {
+          medResponse = "நான் குறிப்பிட்ட மருந்துகளைப் பரிந்துரைக்க முடியாது, ஏனெனில் அது மருத்துவப் பரிசோதனைக்குப் பின்பே முடிவு செய்யப்பட வேண்டும். உங்கள் அறிகுறிகளைப் பொறுத்து ஓய்வு மற்றும் நீர்ச்சத்து எடுத்துக்கொள்ளுங்கள். தேவையான மருந்துகளுக்கு மருத்துவர் அல்லது மருந்தாளுநரிடம் ஆலோசனை பெறவும்.";
         }
-      }
-    }
-
-    // Merge any previously accumulated symptoms
-    if (Array.isArray(this.accumulatedSymptoms)) {
-      for (const s of this.accumulatedSymptoms) {
-        if (!detected.includes(s)) {
-          detected.push(s);
-        }
-      }
-    }
-    this.accumulatedSymptoms = Array.from(new Set([...(this.accumulatedSymptoms || []), ...detected]));�� या डॉक्टर की सलाह पर ही लें। यदि दर्द बढ़ जाए तो तुरंत चिकित्सा परामर्श लें।";
+      } else if (lang === 'hi') {
+        if (isVomiting) {
+          medResponse = "मैं विशिष्ट दवाइयां या खुराक निर्धारित नहीं कर सकता, क्योंकि यह किसी डॉक्टर या फार्मासिस्ट द्वारा ही तय की जानी चाहिए। उल्टी की स्थिति में सबसे महत्वपूर्ण है कि थोड़ा-थोड़ा पानी या ओआरएस पीकर शरीर में पानी की कमी न होने दें। जब तक पेट सामान्य न हो, हल्का भोजन लें। यदि उल्टी बंद न हो तो तुरंत डॉक्टर से संपर्क करें।";
+        } else if (isHeadache) {
+          medResponse = "मैं कोई विशिष्ट दवा निर्धारित नहीं कर सकता। सिरदर्द में शांत और अंधेरे कमरे में आराम करें तथा पर्याप्त पानी पिएं। पेरासिटामोल जैसी सामान्य दर्द निवारक दवा केवल फार्मासिस्ट या डॉक्टर की सलाह पर ही लें। यदि दर्द बढ़ जाए तो तुरंत चिकित्सा परामर्श लें।";
         } else {
           medResponse = "मैं विशिष्ट दवाइयों की सिफारिश नहीं कर सकता। किसी भी दवा के सेवन से पहले कृपया योग्य डॉक्टर या फार्मासिस्ट से परामर्श अवश्य लें। आराम करें और खूब पानी पिएं।";
         }
@@ -1723,14 +1576,16 @@ class LLMClient {
       { canonical: 'nausea', triggers: ['nausea', 'nauseous', 'sick to my stomach', 'sick to stomach', 'queasy', 'குமட்டல்', 'जी मिचलाना'] },
       { canonical: 'fever', triggers: ['fever', 'feverish', 'high temperature', 'temperature', 'chills', 'shivering', 'burning up', 'sweats', 'sweating', 'காய்ச்சல்', 'சூடு', 'बुखार', 'तापमान', 'तेज बुखार'] },
       { canonical: 'chest pain', triggers: ['chest pain', 'chest hurts', 'chest tightness', 'chest pressure', 'angina', 'tightness in chest', 'heart hurts', 'நெஞ்சு வலி', 'மார்பு வலி', 'सीने में दर्द', 'छाती में दर्द'] },
-      { canonical: 'shortness_of_breath', triggers: ['shortness of breath', 'breathless', 'breathing difficulty', 'difficulty breathing', "can't breathe properly", 'trouble breathing', 'hard to breathe', 'breathing problem', 'wheezing', 'can\'t breathe', 'gasping', 'shortness of breath now', 'மூச்சுத்திணறல்', 'மூச்சு திணறல்', 'மூச்சு விட கஷ்டமா இருக்கு', 'மூச்சு வாங்குது', 'மூச்சுக்குழல்', 'சாப்பாடு', 'सांस लेने में तकलीफ', 'सांस फूलना', 'सांस लेने में दिक्कत'] },
+      { canonical: 'shortness_of_breath', triggers: ['shortness of breath', 'breathless', 'breathing difficulty', 'difficulty breathing', "can't breathe properly", 'trouble breathing', 'hard to breathe', 'breathing problem', 'wheezing', "can't breathe", 'gasping', 'shortness of breath now', 'மூச்சுத்திணறல்', 'மூச்சு திணறல்', 'மூச்சு விட கஷ்டமா இருக்கு', 'மூச்சு வாங்குது', 'மூச்சுக்குழல்', 'சாப்பாடு', 'सांस लेने में तकलीफ', 'सांस फूलना', 'सांस लेने में दिक्कत'] },
       { canonical: 'stomach pain', triggers: ['stomach pain', 'stomach ache', 'stomach hurts', 'belly ache', 'abdominal pain', 'cramps', 'cramping', 'gut hurts', 'tummy ache', 'வயிற்று வலி', 'வயிறு வலி', 'पेट दर्द', 'पेट में दर्द'] },
       { canonical: 'fatigue', triggers: ['fatigue', 'fatigued', 'exhausted', 'exhaustion', 'tired', 'tiredness', 'no energy', 'drained', 'சோர்வு', 'களைப்பு', 'थकान', 'थकावट'] },
       { canonical: 'sore throat', triggers: ['sore throat', 'throat hurts', 'scratchy throat', 'hard to swallow', 'swollen glands', 'தொண்டை வலி', 'கரகரப்பு', 'गले में खराश', 'गले में दर्द'] },
       { canonical: 'cough', triggers: ['cough', 'coughing', 'hack', 'hacking', 'dry cough', 'phlegm', 'இருமல்', 'சளி', 'खांसी', 'कफ'] },
       { canonical: 'back pain', triggers: ['back pain', 'back hurts', 'lower back pain', 'backache', 'spine hurts', 'முதுகு வலி', 'पीठ दर्द', 'कमर दर्द'] },
       { canonical: 'rash', triggers: ['rash', 'hives', 'itching', 'itchy skin', 'bumps', 'red spots', 'skin irritation', 'அரிப்பு', 'தடிப்பு', 'खुजली', 'चकत्ते'] },
-      { canonical: 'knee pain', triggers: ['knee pain', 'knees hurt', 'knee hurts', 'pain in my knees', 'pain in my knee', 'hurts when i walk', 'hurt when i walk', 'knee ache', 'sore knees', 'swollen knees', 'knees', 'knee', 'முழங்கால் வலி', 'முழங்கால்', 'முழங்கால்ல வலி', 'முட்டி வலி', 'முட்டில வலி', 'முட்டில பெயின்', 'முட்டில pain', 'கால் வலி', 'muzhang kaal vali', 'mutti vali', 'muttile pain', 'knee la romba pain', 'घुटने में दर्द', 'घुटने का दर्द', 'घुटनों में दर्द'] },
+      { canonical: 'knee pain', triggers: ['knee pain', 'knees hurt', 'knee hurts', 'pain in my knees', 'pain in my knee', 'hurts when i walk', 'hurt when i walk', 'knee ache', 'sore knees', 'swollen knees', 'knees', 'knee', 'முழங்கால் வலி', 'முழங்கால்', 'முழங்கால்ல வலி', 'முட்டி வலி', 'முட்டில வலி', 'முட்டில பெயின்', 'முட்டில pain', 'muzhang kaal vali', 'mutti vali', 'muttile pain', 'knee la romba pain', 'घुटने में दर्द', 'घुटने का दर्द', 'घुटनों में दर्द'] },
+      { canonical: 'leg pain', triggers: ['leg pain', 'legs hurt', 'leg hurts', 'pain in my leg', 'pain in my legs', 'pain in leg', 'pain in legs', 'leg ache', 'sore leg', 'sore legs', 'legs are hurting', 'leg is hurting', 'calf pain', 'thigh pain', 'shin pain', 'hamstring pain', 'கால் வலி', 'காலில் வலி', 'காலில் பெயின்', 'காலில் pain', 'टांग में दर्द', 'पैर में दर्द', 'पिंडली में दर्द'] },
+      { canonical: 'leg swelling', triggers: ['leg swelling', 'legs swelling', 'swollen leg', 'swollen legs', 'swelling in my leg', 'swelling in my legs', 'leg is swollen', 'legs are swollen', 'swelling in leg', 'swelling in the leg', 'swollen calf', 'calf swelling', 'swollen ankle', 'swollen foot', 'swollen feet', 'காலில் வீக்கம்', 'கால் வீக்கம்', 'टांग में सूजन', 'पैर में सूजन'] },
       { canonical: 'vomiting', triggers: ['vomit', 'vomiting', 'threw up', 'throwing up', 'puking', 'வாந்தி', 'வாந்தி வருது', 'வாந்தி இருக்கு', 'enaku vomit aagudhu', 'vomit aagudhu', 'उल्टी', 'उल्टी होना'] },
       { canonical: 'weakness', triggers: ['weakness', 'weak', 'very weak', 'so weak', 'loss of strength', 'பலவீனம்', 'உடம்பு பலவீனம்', 'முடியல', 'உடம்பு ரொம்ப முடியல', 'weak-aa இருக்கு', 'weak aa irukku', 'udambu romba weak aa irukku', 'udambu romba mudiyala', 'कमजोरी', 'अशक्तता'] },
     ];
@@ -1742,6 +1597,17 @@ class LLMClient {
       }
     }
 
+    // Direct fallback for leg pain/swelling combinations
+    const hasLeg = /\b(leg|legs|calf|thigh|shin)\b/i.test(lower) || /கால்|காலில்/i.test(lastUserMsg) || /टांग|पैर/i.test(lastUserMsg);
+    const hasPain = /\b(pain|hurts|hurt|aching|ache|sore)\b/i.test(lower) || /வலி/i.test(lastUserMsg) || /दर्द/i.test(lastUserMsg);
+    const hasSwelling = /\b(swelling|swollen|puffy|enlarged)\b/i.test(lower) || /வீக்கம்/i.test(lastUserMsg) || /सूजन/i.test(lastUserMsg);
+    if (hasLeg && hasPain && !currentTurnDetected.includes('leg pain')) {
+      currentTurnDetected.push('leg pain');
+    }
+    if (hasLeg && hasSwelling && !currentTurnDetected.includes('leg swelling')) {
+      currentTurnDetected.push('leg swelling');
+    }
+
     // Deterministic clinical symptom extraction from medical-transcriber
     const clinicalExtraction = extractClinicalSymptoms(lastUserMsg, lang);
     if (clinicalExtraction && clinicalExtraction.symptoms) {
@@ -1751,6 +1617,115 @@ class LLMClient {
           currentTurnDetected.push(canonical);
         }
       }
+    }
+
+    // Multi-turn body part clarification handlers (e.g. user says "leg", "knee")
+    const isLegClarification = /^(?:in\s+my\s+|in\s+the\s+|it'?s\s+my\s+|my\s+)?(?:leg|legs|left\s+leg|right\s+leg|both\s+legs|calf|thigh|shin)$/i.test(lower.trim()) ||
+      /^(?:கால்|காலில்|எனது\s*கால்|இடது\s*கால்|வலது\s*கால்)$/i.test(lastUserMsg.trim()) ||
+      /^(?:पैर|टांग|दोनों\s*पैर)$/i.test(lastUserMsg.trim());
+
+    const isKneeClarification = /^(?:in\s+my\s+|in\s+the\s+|it'?s\s+my\s+|my\s+)?(?:knee|knees|left\s+knee|right\s+knee|both\s+knees)$/i.test(lower.trim()) ||
+      /^(?:முழங்கால்|முட்டி|இடது\s*முழங்கால்|வலது\s*முழங்கால்)$/i.test(lastUserMsg.trim()) ||
+      /^(?:घुटना|घुटने|दोनों\s*घुटने)$/i.test(lastUserMsg.trim());
+
+    // When the user previously reported leg pain and now says "leg" (clarification):
+    // Interpret this as clarification of the already-known body part, NOT a new generic symptom.
+    // Advance to the next leg-pain question. NEVER return to generic "describe what you are experiencing".
+    if (isLegClarification && (this.accumulatedSymptoms.includes('leg pain') || this.currentTriageState === 'leg_pain')) {
+      let clarificationText = '';
+      if (lang === 'ta') {
+        clarificationText = "புரிந்துகொண்டேன், உங்கள் கால். இந்த கால் வலி எப்போது தொடங்கியது, வலி எவ்வளவு தீவிரமாக இருக்கிறது (0 முதல் 10 வரை), மற்றும் காலில் வீக்கம், சிவத்தல் அல்லது உணர்வின்மை உள்ளதா?";
+      } else if (lang === 'hi') {
+        clarificationText = "समझ गया, आपकी टांग में। कृपया बताएं कि यह दर्द कब शुरू हुआ, दर्द की तीव्रता 0 से 10 के पैमाने पर कितनी है, और क्या पैर में सूजन, लालिमा या सुन्नपन महसूस हो रहा है?";
+      } else {
+        clarificationText = "Understood, your leg. To continue assessing your leg pain, could you tell me when the pain started, how severe it is on a scale of 0 to 10, whether there was an injury, and if you notice any swelling or numbness?";
+      }
+      this.pendingQuestion = {
+        id: 'leg_pain_follow_up_severity_timeline',
+        symptom: 'leg pain',
+        bodyPart: 'leg',
+        stage: 2,
+        questionText: clarificationText
+      };
+      this.currentTriageState = 'leg_pain';
+
+      const sentences = clarificationText.match(/[^.!?।]+[.!?।]+/g) || [clarificationText];
+      let fullText = '';
+      for (const s of sentences) {
+        if (signal?.aborted) return { cancelled: true, text: fullText, toolCalls: [] };
+        await new Promise(r => setTimeout(r, 40));
+        fullText += s;
+        onTextChunk(s);
+      }
+      this.addAssistantMessage(fullText);
+      return {
+        cancelled: false,
+        text: fullText,
+        toolCalls: [],
+        firstTokenMs: 40,
+        totalMs: Date.now() - startTime,
+      };
+    }
+
+    if (isKneeClarification && (this.accumulatedSymptoms.includes('knee pain') || this.currentTriageState === 'knee_pain')) {
+      let clarificationText = '';
+      if (lang === 'ta') {
+        clarificationText = "புரிந்துகொண்டேன், உங்கள் முழங்கால். முழங்காலில் வீக்கம் உள்ளதா, ஒரு முழங்காலிலா அல்லது இரண்டிலுமா, மற்றும் உங்களால் சாதாரணமாக நடக்க முடிகிறதா?";
+      } else if (lang === 'hi') {
+        clarificationText = "समझ गया, आपके घुटने में। क्या घुटने में सूजन है, दर्द एक घुटने में है या दोनों में, और क्या आप सामान्य रूप से चल पा रहे हैं?";
+      } else {
+        clarificationText = "Understood, your knee. Could you let me know if you notice any swelling, whether one or both knees hurt, and if you are able to walk normally?";
+      }
+      this.pendingQuestion = {
+        id: 'knee_pain_follow_up',
+        symptom: 'knee pain',
+        bodyPart: 'knee',
+        stage: 2,
+        questionText: clarificationText
+      };
+      this.currentTriageState = 'knee_pain';
+
+      const sentences = clarificationText.match(/[^.!?।]+[.!?।]+/g) || [clarificationText];
+      let fullText = '';
+      for (const s of sentences) {
+        if (signal?.aborted) return { cancelled: true, text: fullText, toolCalls: [] };
+        await new Promise(r => setTimeout(r, 40));
+        fullText += s;
+        onTextChunk(s);
+      }
+      this.addAssistantMessage(fullText);
+      return {
+        cancelled: false,
+        text: fullText,
+        toolCalls: [],
+        firstTokenMs: 40,
+        totalMs: Date.now() - startTime,
+      };
+    }
+
+    // Resolve unlocated prior pain when user answers with a body part
+    const hasPriorPain = this.accumulatedSymptoms.some(s => s.toLowerCase().includes('pain')) ||
+      this.conversationHistory.some(m => m.role === 'user' && /\b(pain|hurts|discomfort|வலி|दर्द)\b/i.test(m.content)) ||
+      (this.pendingQuestion && (this.pendingQuestion.id === 'location_inquiry' || this.pendingQuestion.bodyPart === 'unknown'));
+
+    if (isLegClarification && hasPriorPain) {
+      if (!currentTurnDetected.includes('leg pain')) {
+        currentTurnDetected.push('leg pain');
+      }
+      if (!this.accumulatedSymptoms.includes('leg pain')) {
+        this.accumulatedSymptoms.push('leg pain');
+      }
+      this.currentTriageState = 'leg_pain';
+    }
+
+    if (isKneeClarification && hasPriorPain) {
+      if (!currentTurnDetected.includes('knee pain')) {
+        currentTurnDetected.push('knee pain');
+      }
+      if (!this.accumulatedSymptoms.includes('knee pain')) {
+        this.accumulatedSymptoms.push('knee pain');
+      }
+      this.currentTriageState = 'knee_pain';
     }
 
     const detected = [...currentTurnDetected];
@@ -1907,7 +1882,25 @@ class LLMClient {
       } else if (/\b(since|yesterday|today|days|hours|morning|night|week|started)\b/i.test(lower)) {
         responseText = "Thank you for clarifying the timeline. Could you tell me what specific physical symptoms or sensations you are feeling right now?";
       } else if (/\b(severe|terrible|bad|unbearable|mild|a lot|hurts|pain)\b/i.test(lower)) {
-        responseText = "I hear you, and I want to make sure you get appropriate care. Where in your body are you experiencing this discomfort?";
+        const knownBodyPart = (
+          /\b(leg|legs|knee|knees|head|chest|back|stomach|belly|abdomen|throat|shoulder|arm|foot|ankle|calf|thigh|shin)\b/i.test(lower) ||
+          this.accumulatedSymptoms.some(s => /\b(leg|knee|head|chest|back|stomach|throat|shoulder|arm|foot)\b/i.test(s))
+        );
+        if (knownBodyPart) {
+          if (/\b(leg|legs|calf|thigh|shin)\b/i.test(lower) || this.accumulatedSymptoms.some(s => s.includes('leg'))) {
+            responseText = "Understood, regarding your leg pain. Could you tell me when it started, how severe it is from 0 to 10, whether there was an injury, and if you notice any swelling or numbness?";
+          } else if (/\b(knee|knees)\b/i.test(lower) || this.accumulatedSymptoms.some(s => s.includes('knee'))) {
+            responseText = "Understood, regarding your knee pain. Could you let me know if you notice any swelling, whether one or both knees hurt, and if you are able to walk normally?";
+          } else {
+            responseText = "Thank you for describing the pain. Could you tell me more about how severe it is on a scale of 0 to 10 and when it first began?";
+          }
+        } else {
+          responseText = "I hear you, and I want to make sure you get appropriate care. Where in your body are you experiencing this discomfort?";
+        }
+      } else if (isLegClarification || this.accumulatedSymptoms.includes('leg pain') || this.currentTriageState === 'leg_pain') {
+        responseText = "Understood, your leg. To continue assessing your leg pain, could you tell me when the pain started, how severe it is on a scale of 0 to 10, whether there was an injury, and if you notice any swelling or numbness?";
+      } else if (isKneeClarification || this.accumulatedSymptoms.includes('knee pain') || this.currentTriageState === 'knee_pain') {
+        responseText = "Understood, your knee. Could you let me know if you notice any swelling, whether one or both knees hurt, and if you are able to walk normally?";
       } else if (/\b(yes|yeah|sure|okay|alright)\b/i.test(lower)) {
         responseText = "Whenever you're ready, please describe your main symptoms so I can assess them for you.";
       } else if (/\b(thank you|thanks)\b/i.test(lower)) {
@@ -2011,6 +2004,8 @@ class LLMClient {
         const sL = String(s).toLowerCase();
         return sL.includes('breath') || sL.includes('மூச்சு') || sL.includes('सांस');
       }));
+      const isLegPain = toolData.symptoms?.some(s => s.toLowerCase() === 'leg pain');
+      const isLegSwelling = toolData.symptoms?.some(s => s.toLowerCase() === 'leg swelling');
       const isKnee = toolData.symptoms?.some(s => s.toLowerCase().includes('knee'));
       const isVomit = toolData.symptoms?.some(s => s.toLowerCase().includes('vomit'));
 
@@ -2037,6 +2032,14 @@ class LLMClient {
           responseText = offerCare
             ? `உங்கள் அறிகுறிகளைப் பார்க்கும்போது, இது ${condTa} ஆக இருக்க வாய்ப்புள்ளது (${score}% பொருத்தம்). இது அவசர கவனிப்பு தேவைப்படலாம் என்பதால், உடனடியாக அவசர சிகிச்சை மையத்தை அணுகுமாறு பரிந்துரைக்கிறேன். உங்களுக்கு அருகில் உள்ள அவசர மருத்துவமனையை வரைபடத்தில் காட்டவா?`
             : `உங்கள் அறிகுறிகளைப் பார்க்கும்போது, இது ${condTa} ஆக இருக்க வாய்ப்புள்ளது (${score}% பொருத்தம்). இது அவசர கவனிப்பு தேவைப்படலாம் என்பதால், உடனடியாக அவசர சிகிச்சை மையத்தை அணுகுமாறு பரிந்துரைக்கிறேன். தேவைப்பட்டால் அவசர உதவி எண் 108-ஐ அழைக்கவும்.`;
+        } else if (isLegPain) {
+          responseText = `உங்கள் அறிகுறிகளை ஆராய்ந்ததில், இது ${condTa} நிலையுடன் ${score}% ஒத்துப்போகிறது. இந்த கால் வலி எப்போது தொடங்கியது, வலி எவ்வளவு தீவிரமாக இருக்கிறது (0 முதல் 10 வரை), காலில் வீக்கம், சிவத்தல் அல்லது உணர்வின்மை உள்ளதா, மற்றும் ஒரு காலிலா அல்லது இரு கால்களிலுமா?`;
+          this.currentTriageState = 'leg_pain';
+          this.pendingQuestion = { id: 'leg_pain_triage', symptom: 'leg pain', bodyPart: 'leg', stage: 1, questionText: responseText };
+        } else if (isLegSwelling) {
+          responseText = `உங்கள் அறிகுறிகளை ஆராய்ந்ததில், இது ${condTa} நிலையுடன் ${score}% ஒத்துப்போகிறது. காலில் வீக்கம் எப்போது தொடங்கியது, வலி அல்லது சிவத்தல் உள்ளதா, மற்றும் ஒரு காலிலா அல்லது இரு கால்களிலுமா என்பதைத் தெரிவிக்கவும்.`;
+          this.currentTriageState = 'leg_swelling';
+          this.pendingQuestion = { id: 'leg_swelling_triage', symptom: 'leg swelling', bodyPart: 'leg', stage: 1, questionText: responseText };
         } else if (isKnee) {
           responseText = `உங்கள் அறிகுறிகளை ஆராய்ந்ததில், இது ${condTa} நிலையுடன் ${score}% ஒத்துப்போகிறது. முழங்காலில் வீக்கம் உள்ளதா, உங்களால் சாதாரணமாக நடக்க முடிகிறதா என்பதைத் தெரிந்து கொள்ள விரும்புகிறேன். மூட்டுக்கு அதிக சிரமம் கொடுக்காமல் ஓய்வெடுங்கள்.`;
         } else if (isVomit) {
@@ -2052,6 +2055,14 @@ class LLMClient {
           responseText = offerCare
             ? `आपके लक्षणों के आधार पर, यह ${condHi} का संकेत हो सकता है (${score}% मिलान)। यह गंभीर स्थिति हो सकती है, इसलिए तुरंत आपातकालीन चिकित्सा सहायता लेने की सलाह दी जाती है। क्या मैं आपके नजदीकी अस्पताल की जानकारी दिखाऊँ?`
             : `आपके लक्षणों के आधार पर, यह ${condHi} का संकेत हो सकता है (${score}% मिलान)। यह गंभीर स्थिति हो सकती है, इसलिए तुरंत आपातकालीन चिकित्सा सहायता लेने की सलाह दी जाती है।`;
+        } else if (isLegPain) {
+          responseText = `आपके लक्षणों के अनुसार, यह ${condHi} से ${score}% मेल खाता है। कृपया बताएं कि यह पैर का दर्द कब शुरू हुआ, दर्द की तीव्रता 0 से 10 के पैमाने पर कितनी है, क्या पैर में सूजन, लालिमा या सुन्नपन है, और क्या दर्द एक पैर में है या दोनों में?`;
+          this.currentTriageState = 'leg_pain';
+          this.pendingQuestion = { id: 'leg_pain_triage', symptom: 'leg pain', bodyPart: 'leg', stage: 1, questionText: responseText };
+        } else if (isLegSwelling) {
+          responseText = `आपके लक्षणों के अनुसार, यह ${condHi} से ${score}% मेल खाता है। कृपया बताएं कि पैरों में सूजन कब से है, क्या दर्द या लालिमा भी है, और क्या यह एक पैर में है या दोनों में?`;
+          this.currentTriageState = 'leg_swelling';
+          this.pendingQuestion = { id: 'leg_swelling_triage', symptom: 'leg swelling', bodyPart: 'leg', stage: 1, questionText: responseText };
         } else if (isKnee) {
           responseText = `आपके लक्षणों के अनुसार, यह ${condHi} से ${score}% मेल खाता है। क्या घुटने में सूजन है, और क्या आप सामान्य रूप से चल पा रहे हैं? इस समय जोड़ पर अधिक दबाव न डालें और आराम करें।`;
         } else if (isVomit) {
@@ -2066,6 +2077,14 @@ class LLMClient {
           responseText = offerCare
             ? `Based on what you've described, this shows a ${score}% match with ${top.condition}. Because these symptoms can be serious, I strongly recommend seeking medical evaluation right away or going to an urgent care clinic. Would you like me to find the nearest emergency-capable clinic for you?`
             : `Based on what you've described, this shows a ${score}% match with ${top.condition}. Because these symptoms can be serious, I strongly recommend seeking medical evaluation right away or going to an urgent care clinic.`;
+        } else if (isLegPain) {
+          responseText = `Based on your symptoms, the triage analysis points towards ${top.condition}. To better evaluate your leg pain, could you tell me when the leg pain started, how severe it is on a scale of 0 to 10, whether there was an injury, if you notice any swelling or numbness, and whether the pain is in one leg or both?`;
+          this.currentTriageState = 'leg_pain';
+          this.pendingQuestion = { id: 'leg_pain_triage', symptom: 'leg pain', bodyPart: 'leg', stage: 1, questionText: responseText };
+        } else if (isLegSwelling) {
+          responseText = `Based on your symptoms, the triage analysis points towards ${top.condition}. To evaluate the leg swelling, could you tell me when the swelling started, whether there is pain, redness, or warmth, and if one or both legs are affected?`;
+          this.currentTriageState = 'leg_swelling';
+          this.pendingQuestion = { id: 'leg_swelling_triage', symptom: 'leg swelling', bodyPart: 'leg', stage: 1, questionText: responseText };
         } else if (isKnee) {
           responseText = `Based on your symptoms, the triage analysis points towards ${top.condition}. To better evaluate this, could you let me know if you notice any swelling, whether one or both knees hurt, and if you are able to walk normally? For now, rest the joint and avoid putting excess weight on it.`;
         } else if (isVomit) {
